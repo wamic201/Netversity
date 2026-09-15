@@ -1,3 +1,7 @@
+# Netversity_new.py — redesigned standalone Windows network workspace
+# Based on the supplied Netversity.py; Python 3.10+ and Tkinter required.
+# Optional graphs: pip install matplotlib networkx pillow
+# Nmap must be installed separately for security scans.
 # Netversity_R5_3.py
 # Network Manager (Windows) - Full Suite
 # Features: 
@@ -122,34 +126,7 @@ def get_os_from_ttl(ttl):
 # Utilities / helpers
 # ---------------------------
  
-def set_static_config(adapter_name: str, ip: str, mask: str, gateway: str, dns1: str, dns2: str = "") -> Tuple[bool, str]:
-    """Sets a static IP configuration using netsh with robust input handling."""
-    adapter_name = adapter_name.strip().replace('"', '') 
-    if gateway and gateway.strip():
-        cmd_ip = f'netsh interface ip set address name="{adapter_name}" static {ip} {mask} {gateway} 1'
-    else:
-        cmd_ip = f'netsh interface ip set address name="{adapter_name}" static {ip} {mask}'
-    code, out, _ = run_cmd(cmd_ip)
-    if code != 0: return False, f"Failed to set IP Address.\nCommand: {cmd_ip}\nOutput: {out}"
-    
-    if dns1 and dns1.strip():
-        cmd_dns1 = f'netsh interface ip set dns name="{adapter_name}" static {dns1}'
-        code, out, _ = run_cmd(cmd_dns1)
-        if code != 0: return False, f"Failed to set Primary DNS.\nOutput: {out}"
-    if dns2 and dns2.strip():
-        cmd_dns2 = f'netsh interface ip add dns name="{adapter_name}" {dns2} index=2'
-        run_cmd(cmd_dns2)
-    return True, "Static configuration applied successfully."
  
-def set_dhcp_config(adapter_name: str) -> Tuple[bool, str]:
-    """Resets the adapter to DHCP."""
-    adapter_name = adapter_name.strip().replace('"', '')
-    cmd_ip = f'netsh interface ip set address name="{adapter_name}" source=dhcp'
-    code_ip, out_ip, _ = run_cmd(cmd_ip)
-    cmd_dns = f'netsh interface ip set dns name="{adapter_name}" source=dhcp'
-    code_dns, out_dns, _ = run_cmd(cmd_dns)
-    if code_ip == 0 and code_dns == 0: return True, "Reverted to DHCP successfully."
-    else: return False, f"Errors occurred:\nIP: {out_ip}\nDNS: {out_dns}"
  
 def run_cmd(cmd: str) -> Tuple[int, str, str]:
     p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
@@ -207,17 +184,7 @@ def get_wired_interfaces() -> List[Dict]:
             })
     return interfaces
  
-def set_interface_state(interface_name: str, enable: bool) -> bool:
-    action = "enable" if enable else "disable"
-    cmd = f'netsh interface set interface "{interface_name}" admin={action}'
-    code, out, err = run_cmd(cmd)
-    return code == 0
  
-def get_active_interface_alias() -> Optional[str]:
-    cmd = 'powershell -NoProfile -Command "Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null } | Select-Object -ExpandProperty InterfaceAlias -ErrorAction SilentlyContinue"'
-    code, out, err = run_cmd(cmd)
-    if code == 0 and out.strip(): return out.strip().splitlines()[0].strip()
-    return None
  
 # ---------------------------
 # netsh parsing utilities (WiFi)
@@ -277,36 +244,7 @@ def wifi_interface_alias() -> Optional[str]:
     m = re.search(r'^\s*Name\s*:\s*(.+)$', out, flags=re.MULTILINE)
     return m.group(1).strip() if m else None
  
-def get_adapter_info(alias: str) -> Dict[str, Optional[str]]:
-    info = {"IPv4": None, "PrefixLength": None, "Mask": None, "Gateway": None, "DNS1": None, "DNS2": None, "MAC": None, "DHCP": None}
-    cmd_base = f'powershell -NoProfile -Command'
-    code, out, _ = run_cmd(f'{cmd_base} "(Get-NetIPConfiguration -InterfaceAlias \'{alias}\').IPv4Address | Select -First 1 | ForEach-Object {{ $_.IPAddress, $_.PrefixLength -join \',\' }}"')
-    if code == 0 and out.strip():
-        parts = out.strip().split(',')
-        if len(parts) >= 2:
-            info["IPv4"] = parts[0].strip()
-            info["PrefixLength"] = parts[1].strip()
-            try:
-                pre = int(info["PrefixLength"])
-                m = ((1 << pre) - 1) << (32 - pre)
-                info["Mask"] = '.'.join(str((m >> (8 * i)) & 0xFF) for i in [3,2,1,0])
-            except: pass
-    code, out, _ = run_cmd(f'{cmd_base} "(Get-NetIPConfiguration -InterfaceAlias \'{alias}\').IPv4DefaultGateway | Select -ExpandProperty NextHop"')
-    if code == 0: info["Gateway"] = out.strip().splitlines()[0].strip() if out.strip() else None
-    code, out, _ = run_cmd(f'{cmd_base} "(Get-DnsClientServerAddress -InterfaceAlias \'{alias}\' -AddressFamily IPv4).ServerAddresses -join \',\'"')
-    if code == 0 and out.strip():
-        dns = [x.strip() for x in out.strip().split(',') if x.strip()]
-        if dns: info["DNS1"] = dns[0]
-        if len(dns) > 1: info["DNS2"] = dns[1]
-    code, out, _ = run_cmd(f'{cmd_base} "(Get-NetAdapter -InterfaceAlias \'{alias}\').MacAddress"')
-    if code == 0: info["MAC"] = out.strip().splitlines()[0].strip() if out.strip() else None
-    code, out, _ = run_cmd(f'{cmd_base} "(Get-NetIPConfiguration -InterfaceAlias \'{alias}\').IPv4Address | Select -First 1 | Select -ExpandProperty PrefixOrigin"')
-    if code == 0: info["DHCP"] = "Dhcp" in out
-    return info
  
-def connect_with_existing_profile(ssid: str) -> bool:
-    code, _, _ = run_cmd(f'netsh wlan connect name="{ssid}" ssid="{ssid}"')
-    return code == 0
  
 def add_temp_profile_and_connect(ssid: str, password: str) -> bool:
     safe_ssid = xml_escape(ssid)
@@ -353,9 +291,6 @@ def connect(ssid: str, password: Optional[str] = None) -> bool:
     if password: return add_temp_profile_and_connect(ssid, password)
     return False
  
-def disconnect() -> bool:
-    code, _, _ = run_cmd('netsh wlan disconnect')
-    return code == 0
  
 def current_status() -> Dict[str, str]:
     code, out, _ = run_cmd('netsh wlan show interfaces')
@@ -534,16 +469,18 @@ class TopoEngine(threading.Thread):
         self.baseline = baseline or {}
         self.interval = max(10, int(interval))
         self.out_q = out_q or queue.Queue()
-        self._stop = threading.Event()
+        self._stop_evt = threading.Event()
         self._kick = threading.Event()   # allows an immediate rescan on demand
  
     def update_baseline(self, new_baseline): self.baseline = new_baseline
-    def stop(self): self._stop.set()
+    def stop(self): self._stop_evt.set()
     def refresh_now(self): self._kick.set()
  
     def run(self):
         try:
             net = ipaddress.ip_network(self.cidr, strict=False)
+            if net.num_addresses > 4096:
+                return
             ips = [str(ip) for ip in net.hosts()]
         except ValueError: return
  
@@ -553,14 +490,14 @@ class TopoEngine(threading.Thread):
         if len(ips) > 500: max_workers = 50
         if len(ips) > 4000: max_workers = 100
  
-        while not self._stop.is_set():
+        while not self._stop_evt.is_set():
             self._kick.clear()
             alive_results = {}
             lock = threading.Lock()
             
             # The task for a single IP
             def scan_host(ip):
-                if self._stop.is_set(): return
+                if self._stop_evt.is_set(): return
                 is_alive, ttl = _ping_details(ip)
                 if is_alive:
                     with lock: alive_results[ip] = ttl
@@ -576,10 +513,11 @@ class TopoEngine(threading.Thread):
                 ttl = alive_results[ip]
                 vendor = get_vendor(mac)
                 os_guess = get_os_from_ttl(ttl)
-                status = "Known"
+                status = "Unreviewed"
                 if self.baseline:
-                    if ip not in self.baseline: status = "New/Rogue"
-                    elif self.baseline[ip] != mac and mac != "Unknown": status = "Spoofed?"
+                    status = "Known"
+                    if ip not in self.baseline: status = "Newly observed"
+                    elif self.baseline[ip] != mac and mac != "Unknown": status = "Address changed"
                 nodes.append({'ip': ip, 'mac': mac, 'vendor': vendor, 'os': os_guess, 'status': status, 'name': _reverse_dns(ip)})
             
             if self.baseline:
@@ -593,241 +531,10 @@ class TopoEngine(threading.Thread):
             except queue.Full: pass
             
             for _ in range(self.interval):
-                if self._stop.is_set(): break
+                if self._stop_evt.is_set(): break
                 if self._kick.wait(timeout=1):
                     break
  
-class TopoWindow(tk.Toplevel):
-    def __init__(self, parent, scan_interval=30):
-        super().__init__(parent)
-        self.parent = parent
-        self.title("Network Discovery (Intelligent)")
-        self.geometry("1100x750")
-        self.protocol('WM_DELETE_WINDOW', self._on_close)
-        
-        self.baseline_file = "topology_baseline.json"
-        self.baseline = self._load_baseline()
-        self.engine: Optional["TopoEngine"] = None
-
-        # Security alerting state: tracks which IPs currently have an
-        # active New/Rogue or Spoofed? flag so we only alert once per
-        # occurrence (not every 30s refresh) and can re-alert if a
-        # device drops off the flagged list and later reappears.
-        self.alert_log_file = "security_alerts.log"
-        self._alerted_ips = set()
-        
-        self._setup_ui()
-        cidr, _, gw, iface = _get_default_iface_gateway()
-        if not cidr:
-            messagebox.showerror("Error", "Could not detect local network.")
-            self.destroy()
-            return
-            
-        self.status_lbl.config(text=f'Net: {cidr} | Gateway: {gw} | Interface: {iface}')
-        
-        if nx is None or plt is None or FigureCanvasTkAgg is None:
-            messagebox.showerror("Error", "Missing networkx/matplotlib. Install with:\n  pip install networkx matplotlib")
-            self.destroy()
-            return
-            
-        self.q = queue.Queue(maxsize=2)
-        self.engine = TopoEngine(cidr, gw, baseline=self.baseline, interval=scan_interval, out_q=self.q)
-        self.engine.start()
-        self.after(500, self._poll_queue)
- 
-    def _setup_ui(self):
-        topf = ttk.Frame(self)
-        topf.pack(fill='x', padx=6, pady=6)
-        ttk.Button(topf, text='Manual Refresh', command=self._manual_refresh).pack(side='left', padx=4)
-        ttk.Button(topf, text='Save as Baseline', command=self._save_baseline).pack(side='left', padx=4)
-        ttk.Button(topf, text='Stop Engine', command=self._stop_engine).pack(side='left', padx=4)
-        ttk.Button(topf, text='Alert Log', command=self._view_alert_log).pack(side='left', padx=4)
-        
-        leg_frame = ttk.Frame(topf)
-        leg_frame.pack(side='right', padx=10)
-        for color, text in [("#90EE90", "Known"), ("#FF9999", "New/Rogue"), ("#D3D3D3", "Missing")]:
-            lbl = tk.Label(leg_frame, text=f"  {text}  ", bg=color, relief="solid", borderwidth=1)
-            lbl.pack(side='left', padx=2)
-
-        # Security alert banner — hidden until a rogue/spoofed device is detected
-        self._alert_banner = tk.Frame(self, bg="#8B0000")
-        self._alert_lbl = tk.Label(self._alert_banner, text="", bg="#8B0000", fg="white",
-                                    font=("Segoe UI", 9, "bold"), anchor="w", padx=10, pady=6,
-                                    wraplength=950, justify="left")
-        self._alert_lbl.pack(side="left", fill="x", expand=True)
-        tk.Button(self._alert_banner, text="Dismiss", command=self._dismiss_alert_banner,
-                  bg="#5a0000", fg="white", activebackground="#3a0000", relief="flat",
-                  padx=10).pack(side="right", padx=8, pady=4)
-        # Not packed yet — shown on first alert via _show_alert_banner()
- 
-        self.status_lbl = ttk.Label(self, text='Initializing...', font=('Consolas', 10))
-        self.status_lbl.pack(fill='x', padx=6, pady=(0,6))
-        
-        self.fig, self.ax = plt.subplots(figsize=(10,6))
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
-        self.canvas.get_tk_widget().pack(fill='both', expand=True)
-        self.current_nodes_data = []
- 
-    def _load_baseline(self):
-        if os.path.exists(self.baseline_file):
-            try:
-                with open(self.baseline_file, 'r') as f: return json.load(f)
-            except: pass
-        return {}
- 
-    def _save_baseline(self):
-        if not self.current_nodes_data: return
-        new_baseline = {}
-        for n in self.current_nodes_data:
-            if n['status'] != 'Missing': new_baseline[n['ip']] = n.get('mac', 'Unknown')
-        try:
-            with open(self.baseline_file, 'w') as f: json.dump(new_baseline, f)
-            self.baseline = new_baseline
-            if self.engine: self.engine.update_baseline(new_baseline)
-            messagebox.showinfo("Success", f"Baseline saved with {len(new_baseline)} hosts.")
-            self._manual_refresh()
-        except Exception as e: messagebox.showerror("Error", str(e))
- 
-    def _manual_refresh(self):
-        if self.engine and self.engine.is_alive():
-            self.engine.refresh_now()
-            self.status_lbl.config(text="Manual scan triggered...")
-        else:
-            self.status_lbl.config(text="Engine not running.")
-    def _stop_engine(self):
-        if self.engine: self.engine.stop()
-        self.status_lbl.config(text="Engine stopped.")
-    def _on_close(self):
-        if self.engine: self.engine.stop()
-        self.destroy()
-
-    # ---- Security alerting: rogue devices / spoofed MACs ----
-
-    def _log_security_alert(self, node: Dict):
-        """Append a flagged device to the on-disk security alert log (CSV)."""
-        try:
-            is_new_file = not os.path.exists(self.alert_log_file)
-            with open(self.alert_log_file, 'a', newline='') as f:
-                w = csv.writer(f)
-                if is_new_file:
-                    w.writerow(["Timestamp", "IP", "MAC", "Vendor", "Status", "OS Guess"])
-                w.writerow([
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    node.get('ip', '?'), node.get('mac', 'Unknown'),
-                    node.get('vendor', 'Unknown'), node.get('status', '?'),
-                    node.get('os', 'Unknown'),
-                ])
-        except Exception:
-            pass  # logging must never crash the discovery loop
-
-    def _view_alert_log(self):
-        if not os.path.exists(self.alert_log_file):
-            messagebox.showinfo("Alert Log", "No security alerts have been logged yet.")
-            return
-        try:
-            with open(self.alert_log_file, 'r') as f:
-                content = f.read()
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-            return
-        HelpWindow(self, title="Security Alert Log", text=content or "(empty)")
-
-    def _dismiss_alert_banner(self):
-        self._alert_banner.pack_forget()
-
-    def _flash_alert_banner(self, remaining=6):
-        if not self._alert_banner.winfo_ismapped():
-            return
-        cur = self._alert_banner.cget("bg")
-        nxt = "#FF3B30" if cur != "#FF3B30" else "#8B0000"
-        self._alert_banner.configure(bg=nxt)
-        self._alert_lbl.configure(bg=nxt)
-        if remaining > 0:
-            self.after(300, lambda: self._flash_alert_banner(remaining - 1))
-        else:
-            self._alert_banner.configure(bg="#8B0000")
-            self._alert_lbl.configure(bg="#8B0000")
-
-    def _show_alert_banner(self, flagged_nodes: List[Dict]):
-        parts = [f"{n['status']}: {n['ip']} ({n.get('vendor', 'Unknown')})" for n in flagged_nodes]
-        self._alert_lbl.config(text="⚠ SECURITY ALERT — " + "   |   ".join(parts))
-        if not self._alert_banner.winfo_ismapped():
-            self._alert_banner.pack(fill='x', padx=6, pady=(0, 4), before=self.status_lbl)
-        try:
-            self.bell()
-        except Exception:
-            pass
-        self._flash_alert_banner()
- 
-    def _poll_queue(self):
-        try:
-            payload = self.q.get_nowait()
-            self._draw_payload(payload)
-        except queue.Empty: pass
-        self.after(500, self._poll_queue)
- 
-    def _draw_payload(self, payload):
-        nodes = payload.get('nodes', [])
-        gw = payload.get('gateway')
-        self.current_nodes_data = nodes
-
-        # Fire an alert only for devices that just became flagged this cycle,
-        # not every refresh while they remain flagged. If a device's status
-        # later clears, it's removed from the tracked set so a *future*
-        # reappearance can alert again.
-        current_flagged_ips = {n['ip'] for n in nodes if n['status'] in ('New/Rogue', 'Spoofed?')}
-        newly_flagged_ips = current_flagged_ips - self._alerted_ips
-        newly_flagged = [n for n in nodes if n['ip'] in newly_flagged_ips]
-        for n in newly_flagged:
-            self._log_security_alert(n)
-        self._alerted_ips = current_flagged_ips
-        if newly_flagged:
-            self._show_alert_banner(newly_flagged)
-
-        G = nx.Graph()
-        if gw: G.add_node(gw, label=f"Gateway\n{gw}", type='gateway', status='Known')
-        
-        for n in nodes:
-            ip = n['ip']
-            lines = [ip]
-            if n.get('name'): lines.append(n['name'][:15])
-            if n.get('vendor'): lines.append(n['vendor'])
-            if n.get('os'): lines.append(n['os'])
-            G.add_node(ip, label="\n".join(lines), type='host', status=n['status'])
-            if gw: G.add_edge(gw, ip)
- 
-        self.ax.clear()
-        if not G.nodes:
-            self.canvas.draw()
-            return
- 
-        pos = nx.spring_layout(G, seed=42, k=0.6)
-        color_map = []
-        size_map = []
-        for node in G.nodes:
-            attrs = G.nodes[node]
-            status = attrs.get('status', 'Known')
-            if attrs.get('type') == 'gateway':
-                color_map.append('#FFD700')
-                size_map.append(1200)
-            elif status == 'Missing':
-                color_map.append('#D3D3D3')
-                size_map.append(400)
-            elif status in ['New/Rogue', 'Spoofed?']:
-                color_map.append('#FF9999')
-                size_map.append(600)
-            else:
-                color_map.append('#90EE90')
-                size_map.append(600)
- 
-        nx.draw_networkx_nodes(G, pos, node_color=color_map, node_size=size_map, ax=self.ax, edgecolors='black')
-        nx.draw_networkx_edges(G, pos, ax=self.ax, alpha=0.5)
-        nx.draw_networkx_labels(G, pos, nx.get_node_attributes(G, 'label'), font_size=7, ax=self.ax)
-        self.ax.set_axis_off()
-        self.fig.tight_layout()
-        self.canvas.draw()
-        count_alive = sum(1 for n in nodes if n['status'] != 'Missing')
-        self.status_lbl.config(text=f"Active Hosts: {count_alive} | Total: {len(nodes)} | Baseline: {'Loaded' if self.baseline else 'Empty'}")
  
 # ---------------------------
 # Nmap Vulnerability Assessment
@@ -933,12 +640,12 @@ def summarize_port_risk(hosts: Dict[str, List[Tuple[int, str, str]]]) -> str:
         for level, port, proto, service, desc in scored:
             lines.append(f"  [{level:<6}] {port:<5}/{proto:<3} {service:<14} - {desc}")
 
-    if totals["HIGH"] > 0: verdict = "HIGH RISK"
-    elif totals["MEDIUM"] > 0: verdict = "MEDIUM RISK"
-    elif totals["LOW"] > 0: verdict = "LOW RISK"
+    if totals["HIGH"] > 0: verdict = "HIGH"
+    elif totals["MEDIUM"] > 0: verdict = "MEDIUM"
+    elif totals["LOW"] > 0: verdict = "LOW"
     else: verdict = "INFORMATIONAL ONLY"
 
-    header = (f"Overall Verdict: {verdict}\n"
+    header = (f"Service review priority: {verdict}\n"
               f"  High-risk: {totals['HIGH']}   Medium-risk: {totals['MEDIUM']}   "
               f"Low-risk: {totals['LOW']}   Informational: {totals['INFO']}")
     return header + "\n" + "\n".join(lines)
@@ -947,7 +654,7 @@ def format_security_verdict(hosts: Dict[str, List[Tuple[int, str, str]]]) -> str
     """Wraps summarize_port_risk() with the standard report banner."""
     body = summarize_port_risk(hosts)
     rule = "=" * 60
-    return f"\n{rule}\n=== SECURITY RISK ASSESSMENT ===\n{rule}\n{body}\n{rule}\n"
+    return f"\n{rule}\n=== SERVICE EXPOSURE REVIEW (NOT VERIFIED VULNERABILITIES) ===\n{rule}\n{body}\n{rule}\n"
 
 def build_security_verdict_report(raw_output: str) -> str:
     """Entry point called after a completed scan: parses raw Nmap output and
@@ -955,43 +662,6 @@ def build_security_verdict_report(raw_output: str) -> str:
     hosts = extract_hosts_and_ports(raw_output)
     return format_security_verdict(hosts)
 
-class NmapRunner:
-    def __init__(self, target, flags, update_cb, finished_cb):
-        self.target, self.flags, self.update_cb, self.finished_cb = target, flags, update_cb, finished_cb
-        self._proc = None
-        self._stop_evt = threading.Event()
-    
-    def start(self): threading.Thread(target=self._run, daemon=True).start()
-    
-    def stop(self):
-        self._stop_evt.set()
-        if self._proc:
-            try:
-                self._proc.terminate()
-                # /T kills the whole process tree, not just this PID. Since the
-                # process was launched with shell=True, self._proc.pid is
-                # actually cmd.exe's PID — nmap.exe is its CHILD. Without /T,
-                # taskkill only killed the (already-dying) cmd.exe wrapper and
-                # left nmap.exe itself running in the background.
-                subprocess.run(f'taskkill /F /T /PID {self._proc.pid}', shell=True, stdout=subprocess.DEVNULL,
-                                creationflags=_NO_WINDOW_FLAGS)
-            except: pass
- 
-    def _run(self):
-        nmap_exe = find_nmap_binary()
-        if not nmap_exe: 
-            self.update_cb("Nmap not found.\n"); self.finished_cb(False, ""); return
-        cmd = f'"{nmap_exe}" {self.flags} {self.target}'
-        try:
-            self._proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                           creationflags=_NO_WINDOW_FLAGS)
-            for line in self._proc.stdout:
-                if self._stop_evt.is_set(): break
-                self.update_cb(line.rstrip("\n"))
-            self._proc.wait()
-            self.finished_cb(self._proc.returncode==0, "")
-        except Exception as e:
-            self.update_cb(str(e)); self.finished_cb(False, "")
  
 class HelpWindow(tk.Toplevel):
     def __init__(self, parent, title="Nmap Flags Reference", text=""):
@@ -1002,7 +672,7 @@ class HelpWindow(tk.Toplevel):
         frm.pack(fill='both', expand=True)
         lbl = ttk.Label(frm, text=title, font=("Segoe UI", 11, "bold"))
         lbl.pack(anchor='w')
-        txt = scrolledtext.ScrolledText(frm, wrap='word')
+        txt = scrolledtext.ScrolledText(frm, wrap='word', bg='#1e2632', fg='#e8eef7', font=('Consolas', 10))
         txt.pack(fill='both', expand=True, pady=(6,0))
         txt.insert('1.0', text)
         txt.config(state='disabled')
@@ -1079,91 +749,11 @@ class CustomLoggingHandler(http.server.SimpleHTTPRequestHandler):
         msg = "%s - - [%s] %s\n" % (self.client_address[0], self.log_date_time_string(), format % args)
         if hasattr(self.server, 'log_callback'): self.server.log_callback(msg)
  
-class HttpServerThread(threading.Thread):
-    def __init__(self, port, directory, log_callback):
-        super().__init__(daemon=True)
-        self.port, self.directory, self.log_callback = port, directory, log_callback
-        self.httpd = None
-        
-    def run(self):
-        try:
-            handler = partial(CustomLoggingHandler, directory=self.directory)
-            self.httpd = socketserver.TCPServer(("", self.port), handler)
-            self.httpd.log_callback = self.log_callback
-            self.log_callback(f"Server started at port {self.port}\nServing: {self.directory}\n")
-            self.httpd.serve_forever()
-        except Exception as e: self.log_callback(f"Server error: {e}\n")
- 
-    def stop(self):
-        if self.httpd:
-            self.httpd.shutdown()
-            self.httpd.server_close()
-            self.log_callback("Server stopped.\n")
  
 # ---------------------------
 # Adapter settings dialog
 # ---------------------------
  
-class AdapterSettingsDialog(tk.Toplevel):
-    def __init__(self, master, target_adapter=None):
-        super().__init__(master)
-        self.title("Adapter Settings")
-        self.resizable(False, False)
-        self.alias = target_adapter or "Wi-Fi"
-        self.mode = tk.StringVar(value="dhcp")
-        self._setup_ui()
-        self.load_current()
- 
-    def _setup_ui(self):
-        frm = ttk.Frame(self, padding=10)
-        frm.pack(fill="both", expand=True)
-        row = 0
-        ttk.Label(frm, text=f"Adapter: {self.alias}").grid(row=row, column=0, columnspan=2, sticky="w", pady=(0,6))
-        row += 1
-        self.lbl_mac = ttk.Label(frm, text="MAC: -"); self.lbl_mac.grid(row=row, column=0, columnspan=2, sticky="w")
-        row += 1
-        ttk.Separator(frm, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8); row += 1
-        ttk.Radiobutton(frm, text="DHCP (automatic)", variable=self.mode, value="dhcp").grid(row=row, column=0, sticky="w")
-        ttk.Radiobutton(frm, text="Static (manual)",  variable=self.mode, value="static").grid(row=row, column=1, sticky="w")
-        row += 1
-        ttk.Label(frm, text="IPv4 Address").grid(row=row, column=0, sticky="w")
-        self.ent_ip = ttk.Entry(frm, width=22); self.ent_ip.grid(row=row, column=1, sticky="w"); row += 1
-        ttk.Label(frm, text="Subnet Mask").grid(row=row, column=0, sticky="w")
-        self.ent_mask = ttk.Entry(frm, width=22); self.ent_mask.grid(row=row, column=1, sticky="w"); row += 1
-        ttk.Label(frm, text="Gateway").grid(row=row, column=0, sticky="w")
-        self.ent_gw = ttk.Entry(frm, width=22); self.ent_gw.grid(row=row, column=1, sticky="w"); row += 1
-        ttk.Label(frm, text="Primary DNS").grid(row=row, column=0, sticky="w")
-        self.ent_dns1 = ttk.Entry(frm, width=22); self.ent_dns1.grid(row=row, column=1, sticky="w"); row += 1
-        ttk.Label(frm, text="Secondary DNS").grid(row=row, column=0, sticky="w")
-        self.ent_dns2 = ttk.Entry(frm, width=22); self.ent_dns2.grid(row=row, column=1, sticky="w"); row += 1
-        btns = ttk.Frame(frm); btns.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8,0))
-        ttk.Button(btns, text="Load", command=self.load_current).pack(side="left")
-        ttk.Button(btns, text="Apply Static", command=self.apply_static).pack(side="left", padx=6)
-        ttk.Button(btns, text="Reset DHCP", command=self.reset_dhcp).pack(side="left")
-        ttk.Button(btns, text="Close", command=self.destroy).pack(side="right")
- 
-    def load_current(self):
-        info = get_adapter_info(self.alias)
-        self.lbl_mac.config(text=f"MAC: {info.get('MAC') or '-'}")
-        if info.get("DHCP") is True: self.mode.set("dhcp")
-        elif info.get("IPv4"): self.mode.set("static")
-        self.ent_ip.delete(0, tk.END);   self.ent_ip.insert(0, info.get("IPv4") or "")
-        self.ent_mask.delete(0, tk.END); self.ent_mask.insert(0, info.get("Mask") or "")
-        self.ent_gw.delete(0, tk.END);   self.ent_gw.insert(0, info.get("Gateway") or "")
-        self.ent_dns1.delete(0, tk.END); self.ent_dns1.insert(0, info.get("DNS1") or "")
-        self.ent_dns2.delete(0, tk.END); self.ent_dns2.insert(0, info.get("DNS2") or "")
- 
-    def apply_static(self):
-        if not is_admin(): messagebox.showerror("Error", "Admin required."); return
-        ok, msg = set_static_config(self.alias, self.ent_ip.get(), self.ent_mask.get(), self.ent_gw.get(), self.ent_dns1.get(), self.ent_dns2.get())
-        if ok: messagebox.showinfo("Success", "Settings applied."); self.load_current()
-        else: messagebox.showerror("Error", msg)
- 
-    def reset_dhcp(self):
-        if not is_admin(): messagebox.showerror("Error", "Admin required."); return
-        ok, msg = set_dhcp_config(self.alias)
-        if ok: messagebox.showinfo("Success", "Reset to DHCP."); self.load_current()
-        else: messagebox.showerror("Error", msg)
  
 # ---------------------------
 # Network Monitor Engine
@@ -1177,31 +767,6 @@ MONITOR_JITTER_WIN  = 10   # jitter (stdev) rolling window
 # Safe throughput helper — PowerShell Get-NetAdapterStatistics.
 # Runs in a pooled thread so it never blocks the 1-second tick.
 # ---------------------------------------------------------------------------
-def _get_adapter_bytes_ps(alias: str) -> Tuple[Optional[int], Optional[int]]:
-    """
-    Returns (bytes_recv, bytes_sent) using PowerShell.
-    Safe: no ctypes struct manipulation.  Runs in ~100-250 ms on warm PS.
-    Called from a pool thread so latency is absorbed in parallel.
-    """
-    if not alias:
-        return None, None
-    try:
-        cmd = (
-            'powershell -NoProfile -Command '
-            f'"$s=Get-NetAdapterStatistics -Name \'{alias}\' -EA Stop;'
-            f'$s.ReceivedBytes,$s.SentBytes -join \',\'"'
-        )
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              startupinfo=si, shell=True, timeout=3)
-        if proc.returncode == 0 and proc.stdout.strip():
-            parts = proc.stdout.strip().split(',')
-            if len(parts) >= 2:
-                return int(parts[0].strip()), int(parts[1].strip())
-    except Exception:
-        pass
-    return None, None
  
  
 class MonitorEngine(threading.Thread):
@@ -1241,7 +806,7 @@ class MonitorEngine(threading.Thread):
  
     def stop(self):
         self._stop_evt.set()
-        self._pool.shutdown(wait=False)
+        # Pool is closed by run() after in-flight work finishes.
  
     # ---- workers ----
  
@@ -1269,7 +834,7 @@ class MonitorEngine(threading.Thread):
                        now: float, new_bytes: int) -> float:
         hist.append((now, new_bytes))
         if len(hist) > 4: hist.pop(0)
-        if len(hist) < 2: return 0.0
+        if len(hist) < 2: return None
         dt = hist[-1][0] - hist[-2][0]
         db = hist[-1][1] - hist[-2][1]
         if dt <= 0 or db < 0: return 0.0
@@ -1287,8 +852,11 @@ class MonitorEngine(threading.Thread):
             self._cache_ttl -= 1
             if self._cache_ttl <= 0:
                 try:
-                    _, _, gw, _ = _get_default_iface_gateway()
                     alias = get_active_interface_alias()
+                    gw = get_adapter_info(alias).get('Gateway')
+                    if (alias, gw) != (self._alias_cache, self._gw_cache):
+                        self._lat_hist.clear(); self._ping_hist.clear()
+                        self._dl_hist.clear(); self._ul_hist.clear()
                 except Exception:
                     gw, alias = None, None
                 self._gw_cache    = gw
@@ -1333,14 +901,14 @@ class MonitorEngine(threading.Thread):
                 loss_pct = round(
                     100.0 * self._ping_hist.count(False) / len(self._ping_hist), 1)
  
-            jitter = 0.0
+            jitter = None
             window = self._lat_hist[-MONITOR_JITTER_WIN:]
             if len(window) >= 2:
                 jitter = round(statistics.stdev(window), 2)
  
             # 6. Throughput
             now = time.time()
-            dl_mbps = ul_mbps = 0.0
+            dl_mbps = ul_mbps = None
             if recv_b is not None:
                 dl_mbps = self._bytes_to_mbps(self._dl_hist, now, recv_b)
             if sent_b is not None:
@@ -1350,7 +918,7 @@ class MonitorEngine(threading.Thread):
             payload = {
                 'latency'  : rtt,
                 'jitter'   : jitter,
-                'loss_pct' : loss_pct,
+                'loss_pct' : loss_pct if gw else None,
                 'dl_mbps'  : dl_mbps,
                 'ul_mbps'  : ul_mbps,
                 'gateway'  : gw    or '-',
@@ -1374,6 +942,7 @@ class MonitorEngine(threading.Thread):
                 deadline = now_pc + self.interval
                 sleep_for = self.interval
             self._stop_evt.wait(timeout=sleep_for)
+        self._pool.shutdown(wait=False, cancel_futures=True)
  
  
 # ---------------------------
@@ -1666,1241 +1235,1133 @@ class PingWindow(tk.Toplevel):
 # Main GUI
 # ---------------------------
  
+
+
+# ---------------------------------------------------------------------------
+# Netversity workspace UI and coordinated task lifecycle
+# ---------------------------------------------------------------------------
+import math
+import shlex
+import webbrowser
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+APP_VERSION = '6.0'
+DATA_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'Netversity'
+BG, PANEL, FIELD = '#151a22', '#1e2632', '#263140'
+TEXT, MUTED, LINE = '#e8eef7', '#aab8cb', '#364557'
+ACCENT, GOOD, WARN, BAD = '#94bfff', '#92d9b0', '#efc77b', '#ffa3a3'
+
+
+def process_args(args, timeout=25):
+    result = subprocess.run(args, capture_output=True, text=True, errors='replace',
+                            creationflags=_NO_WINDOW_FLAGS, timeout=timeout)
+    return result.returncode, result.stdout, result.stderr
+
+
+def get_active_interface_alias():
+    script = ("$r=Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | "
+              "Where-Object {$_.State -ne 'Dead'} | Sort-Object @{Expression={$_.RouteMetric + "
+              "(Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4).InterfaceMetric}} | "
+              "Select-Object -First 1; if($r){$r.InterfaceAlias}")
+    try:
+        code, out, _ = process_args(['powershell', '-NoProfile', '-Command', script])
+        return out.strip() if code == 0 and out.strip() else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _get_adapter_bytes_ps(alias):
+    if not alias: return None, None
+    quoted = str(alias).replace("'", "''")
+    script = f"$s=Get-NetAdapterStatistics -Name '{quoted}' -ErrorAction Stop; [pscustomobject]@{{received=$s.ReceivedBytes;sent=$s.SentBytes}} | ConvertTo-Json -Compress"
+    try:
+        code, out, _ = process_args(['powershell', '-NoProfile', '-Command', script], timeout=3)
+        if code == 0:
+            data = json.loads(out); return int(data['received']), int(data['sent'])
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError): pass
+    return None, None
+
+
+def get_adapter_info(alias):
+    info = dict.fromkeys(('IPv4', 'PrefixLength', 'Mask', 'Gateway', 'DNS1', 'DNS2', 'MAC', 'DHCP'))
+    if not alias:
+        return info
+    quoted = str(alias).replace("'", "''")
+    script = (f"$a='{quoted}'; $c=Get-NetIPConfiguration -InterfaceAlias $a -ErrorAction Stop; "
+              "$ip=$c.IPv4Address | Select-Object -First 1; "
+              "$d=(Get-DnsClientServerAddress -InterfaceAlias $a -AddressFamily IPv4).ServerAddresses; "
+              "[pscustomobject]@{IPv4=$ip.IPAddress; PrefixLength=$ip.PrefixLength; "
+              "Gateway=($c.IPv4DefaultGateway | Select-Object -First 1).NextHop; "
+              "DNS=@($d); MAC=(Get-NetAdapter -Name $a).MacAddress; "
+              "DHCP=([string]$ip.PrefixOrigin -eq 'Dhcp')} | ConvertTo-Json -Compress")
+    try:
+        code, out, _ = process_args(['powershell', '-NoProfile', '-Command', script])
+        if code == 0 and out.strip():
+            data = json.loads(out)
+            info.update({k: data.get(k) for k in info if k in data})
+            if data.get('PrefixLength') is not None:
+                info['Mask'] = str(ipaddress.IPv4Network(f"0.0.0.0/{data['PrefixLength']}").netmask)
+            dns = data.get('DNS') or []
+            if isinstance(dns, str): dns = [dns]
+            info['DNS1'] = dns[0] if dns else None
+            info['DNS2'] = dns[1] if len(dns) > 1 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return info
+
+
+def set_interface_state(interface_name, enable):
+    return process_args(['netsh', 'interface', 'set', 'interface',
+                         f'name={interface_name}', 'admin=enable' if enable else 'admin=disable'])[0] == 0
+
+
+def connect_with_existing_profile(ssid):
+    return process_args(['netsh', 'wlan', 'connect', f'name={ssid}', f'ssid={ssid}'])[0] == 0
+
+
+def disconnect():
+    return process_args(['netsh', 'wlan', 'disconnect'])[0] == 0
+
+
+def set_static_config(adapter_name, ip, mask, gateway, dns1, dns2=''):
+    try:
+        ipaddress.IPv4Address(ip)
+        ipaddress.IPv4Network(f'{ip}/{mask}', strict=False)
+        for value in (gateway, dns1, dns2):
+            if value: ipaddress.IPv4Address(value)
+    except ValueError as exc:
+        return False, f'Invalid IPv4 configuration: {exc}'
+    commands = [['netsh', 'interface', 'ipv4', 'set', 'address', f'name={adapter_name}',
+                 'source=static', f'address={ip}', f'mask={mask}', f'gateway={gateway or "none"}']]
+    if dns1:
+        commands.append(['netsh', 'interface', 'ipv4', 'set', 'dnsservers', f'name={adapter_name}',
+                         'source=static', f'address={dns1}', 'validate=no'])
+    else:
+        commands.append(['netsh', 'interface', 'ipv4', 'set', 'dnsservers', f'name={adapter_name}', 'source=dhcp'])
+    if dns2:
+        commands.append(['netsh', 'interface', 'ipv4', 'add', 'dnsservers', f'name={adapter_name}',
+                         f'address={dns2}', 'index=2', 'validate=no'])
+    for command in commands:
+        code, out, err = process_args(command)
+        if code: return False, 'Configuration was not fully applied.\n' + (err or out)
+    return True, 'Configuration applied.'
+
+
+def set_dhcp_config(adapter_name):
+    errors = []
+    for field in ('address', 'dnsservers'):
+        code, out, err = process_args(['netsh', 'interface', 'ipv4', 'set', field,
+                                      f'name={adapter_name}', 'source=dhcp'])
+        if code: errors.append(err or out)
+    return not errors, '\n'.join(errors) if errors else 'Automatic addressing applied.'
+
+
+class AdapterSettingsDialog(tk.Toplevel):
+    def __init__(self, master, target_adapter=None):
+        super().__init__(master)
+        self.alias = target_adapter or 'Wi-Fi'
+        self.title(f'Adapter settings — {self.alias}')
+        self.configure(bg=BG)
+        self.transient(master)
+        self.geometry('510x440')
+        self.minsize(460, 420)
+        self.mode = tk.StringVar(value='dhcp')
+        self.values = {k: tk.StringVar() for k in ('IPv4', 'Mask', 'Gateway', 'DNS1', 'DNS2')}
+        self.result = tk.StringVar(value='Loading adapter settings…')
+        frame = ttk.Frame(self, padding=22)
+        frame.pack(fill='both', expand=True)
+        ttk.Label(frame, text=self.alias, style='Heading.TLabel').grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 16))
+        for col, (text, value) in enumerate((('Automatic (DHCP)', 'dhcp'), ('Manual', 'static'))):
+            ttk.Radiobutton(frame, text=text, variable=self.mode, value=value, command=self._mode_changed).grid(row=1, column=col, sticky='w', pady=8)
+        self.entries = []
+        for row, (key, label) in enumerate(zip(self.values, ('IPv4 address', 'Subnet mask', 'Gateway', 'Primary DNS', 'Secondary DNS')), 2):
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky='w', pady=7)
+            entry = ttk.Entry(frame, textvariable=self.values[key])
+            entry.grid(row=row, column=1, sticky='ew', padx=(15, 0))
+            self.entries.append(entry)
+        frame.columnconfigure(1, weight=1)
+        ttk.Label(frame, textvariable=self.result, wraplength=430, style='Muted.TLabel').grid(row=7, column=0, columnspan=2, sticky='w', pady=15)
+        self.apply_btn = ttk.Button(frame, text='Apply configuration', command=self._apply, style='Accent.TButton', state='disabled')
+        self.apply_btn.grid(row=8, column=0, sticky='w')
+        ttk.Button(frame, text='Close', command=self.destroy).grid(row=8, column=1, sticky='e')
+        self._mode_changed()
+        master._job(lambda: get_adapter_info(self.alias), self._loaded)
+
+    def _loaded(self, info):
+        if not self.winfo_exists(): return
+        for key, var in self.values.items(): var.set(info.get(key) or '')
+        self.mode.set('dhcp' if info.get('DHCP') else 'static')
+        self.result.set(('MAC: ' + (info.get('MAC') or 'Unavailable') + '\n') + ('Choose addressing mode. Changes affect this adapter.' if info.get('IPv4') else 'No IPv4 address reported. You can configure this adapter.'))
+        self.apply_btn.config(state='normal')
+        self._mode_changed()
+
+    def _mode_changed(self):
+        for entry in self.entries: entry.config(state='normal' if self.mode.get() == 'static' else 'disabled')
+
+    def _apply(self):
+        if not is_admin():
+            self.result.set('Administrator rights are required. Restart Netversity as administrator to apply changes.')
+            return
+        mode, values = self.mode.get(), [v.get().strip() for v in self.values.values()]
+        if mode == 'static':
+            try:
+                ipaddress.IPv4Address(values[0]); ipaddress.IPv4Network(f'{values[0]}/{values[1]}', strict=False)
+                for item in values[2:]:
+                    if item: ipaddress.IPv4Address(item)
+                if values[4] and not values[3]: raise ValueError('Enter primary DNS before secondary DNS.')
+            except ValueError as exc:
+                self.result.set(str(exc)); return
+        self.apply_btn.config(state='disabled')
+        self.result.set('Applying configuration…')
+        def done(result):
+            if not self.winfo_exists(): return
+            self.apply_btn.config(state='normal')
+            self.result.set(result[1])
+            if result[0]: self.master._job(lambda: get_adapter_info(self.alias), self._loaded)
+        def apply():
+            try: return set_dhcp_config(self.alias) if mode == 'dhcp' else set_static_config(self.alias, *values)
+            except Exception as exc: return False, str(exc)
+        self.master._job(apply, done)
+
+
+class SharingServer(threading.Thread):
+    def __init__(self, port, directory, callback, log):
+        super().__init__(daemon=True)
+        self.port, self.directory, self.callback, self.log = port, directory, callback, log
+        self.httpd = None
+        self.cancel = threading.Event()
+
+    def run(self):
+        class Server(http.server.ThreadingHTTPServer):
+            daemon_threads = True
+            allow_reuse_address = os.name != 'nt'
+
+            def server_bind(self):
+                if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+                    self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                super().server_bind()
+        try:
+            handler = partial(CustomLoggingHandler, directory=self.directory)
+            with Server(('', self.port), handler) as server:
+                self.httpd = server
+                server.log_callback = self.log
+                server.timeout = .25
+                if not self.cancel.is_set(): self.callback('Running', '')
+                while not self.cancel.is_set(): server.handle_request()
+            self.callback('Stopped', '')
+        except Exception as exc:
+            self.callback('Failed', str(exc))
+        finally:
+            self.httpd = None
+
+    def stop(self):
+        self.cancel.set()
+
+
+def parse_nmap_xml(text):
+    """Preserve exact port state and structured Nmap evidence."""
+    root = ET.fromstring(text)
+    rows, hosts = [], []
+    for host in root.findall('host'):
+        addr = host.find("address[@addrtype='ipv4']")
+        if addr is None: addr = host.find('address')
+        ip = addr.get('addr', 'Unknown') if addr is not None else 'Unknown'
+        status = host.find('status')
+        hosts.append((ip, status.get('state', 'unknown') if status is not None else 'unknown'))
+        for port in host.findall('ports/port'):
+            state, svc = port.find('state'), port.find('service')
+            status_text = state.get('state', 'unknown') if state is not None else 'unknown'
+            number = int(port.get('portid', 0))
+            service = svc.get('name', '') if svc is not None else ''
+            version = ' '.join(svc.get(k, '') for k in ('product', 'version', 'extrainfo')).strip() if svc is not None else ''
+            evidence = '\n'.join(script.get('id', '') + ': ' + script.get('output', '') for script in port.findall('script'))
+            priority = classify_port_risk(number)[0] if status_text == 'open' else 'Unconfirmed'
+            rows.append((ip, f"{number}/{port.get('protocol', '')}", status_text, service, priority, version, evidence))
+    return rows, hosts
+
+
+class ScanSession(threading.Thread):
+    def __init__(self, targets, plans, callback):
+        super().__init__(daemon=True)
+        self.targets, self.plans, self.callback = targets, plans, callback
+        self.cancel = threading.Event()
+        self.proc = None
+        self.lock = threading.Lock()
+
+    def stop(self):
+        self.cancel.set()
+        with self.lock:
+            if self.proc and self.proc.poll() is None:
+                try: self.proc.terminate()
+                except OSError: pass
+
+    def run(self):
+        records, hosts, failures = [], [], []
+        try:
+            exe = find_nmap_binary()
+            if not exe: raise RuntimeError('Nmap is not installed. Install Nmap, then restart the scan.')
+            for label, args in self.plans:
+                if self.cancel.is_set(): break
+                with tempfile.TemporaryDirectory(prefix='netversity-') as temp:
+                    xmlpath = os.path.join(temp, 'result.xml')
+                    cmd = [exe, *args, '-oX', xmlpath, *self.targets]
+                    self.callback('line', f'\n[{label}] {subprocess.list2cmdline(cmd)}\n')
+                    with self.lock:
+                        if self.cancel.is_set(): break
+                        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, errors='replace', creationflags=_NO_WINDOW_FLAGS)
+                    for line in self.proc.stdout:
+                        self.callback('line', line)
+                    code = self.proc.wait()
+                    if code and not self.cancel.is_set(): failures.append(f'{label}: exit code {code}')
+                    try:
+                        with open(xmlpath, encoding='utf-8') as f: parsed, discovered = parse_nmap_xml(f.read())
+                        records.extend(parsed); hosts.extend((label, ip, state) for ip, state in discovered)
+                    except (OSError, ET.ParseError) as exc:
+                        if not self.cancel.is_set(): failures.append(f'{label}: no complete XML results ({exc})')
+        except Exception as exc:
+            failures.append(str(exc))
+        finally:
+            state = 'Cancelled' if self.cancel.is_set() else 'Failed' if failures else 'Completed'
+            self.callback('done', (state, records, hosts, failures))
+
+
+class PingPane(ttk.Frame):
+    # Reuse the original Windows ping parser and worker without a second window.
+    _do_ping = PingWindow._do_ping
+    _ping_loop = PingWindow._ping_loop
+    _append = PingWindow._append
+    _update_stats = PingWindow._update_stats
+    _clear_output = PingWindow._clear_output
+
+    def __init__(self, parent):
+        super().__init__(parent, padding=14)
+        self._stop_evt, self._out_q = threading.Event(), queue.Queue()
+        self._thread = None
+        self._seq = self._recv = 0
+        self._rtt_list = []
+        self._target_var = tk.StringVar(value='')
+        self._stats_var = tk.StringVar(value='No ping session started')
+        row = ttk.Frame(self); row.pack(fill='x', pady=(0, 12))
+        ttk.Label(row, text='Target').pack(side='left')
+        self.target_entry = ttk.Entry(row, textvariable=self._target_var, width=30)
+        self.target_entry.pack(side='left', padx=10)
+        self.target_entry.bind('<Return>', lambda e: self._start_ping())
+        self._btn_start = ttk.Button(row, text='Start ping', command=self._start_ping, style='Accent.TButton')
+        self._btn_start.pack(side='left')
+        self._btn_stop = ttk.Button(row, text='Stop', command=self._stop_ping, state='disabled')
+        self._btn_stop.pack(side='left', padx=8)
+        ttk.Button(row, text='Clear', command=self._clear_output).pack(side='left')
+        self._txt = scrolledtext.ScrolledText(self, bg=PANEL, fg=TEXT, insertbackground=TEXT,
+                                           font=('Consolas', 10), wrap='word', state='disabled', relief='flat')
+        self._txt.pack(fill='both', expand=True)
+        for tag, color in (('ok', GOOD), ('timeout', WARN), ('info', MUTED), ('header', ACCENT)):
+            self._txt.tag_config(tag, foreground=color)
+        ttk.Label(self, textvariable=self._stats_var).pack(fill='x', pady=(12, 0))
+        self.after(100, self._poll_output)
+
+    def _start_ping(self):
+        target = self._target_var.get().strip()
+        if not target or target.startswith('-') or any(c.isspace() for c in target):
+            self._stats_var.set('Enter one IP address or hostname.'); return
+        if self._thread and self._thread.is_alive(): return
+        self._stop_evt = threading.Event()
+        self._seq = self._recv = 0; self._rtt_list = []
+        self._btn_start.config(state='disabled'); self._btn_stop.config(state='normal')
+        self.target_entry.config(state='disabled')
+        self._thread = threading.Thread(target=self._ping_loop, args=(target,), daemon=True)
+        self._thread.start()
+
+    def _stop_ping(self):
+        self._stop_evt.set(); self._btn_stop.config(state='disabled')
+        self._stats_var.set('Stopping ping…')
+
+    def _poll_output(self):
+        for _ in range(200):
+            try: kind, text, tag = self._out_q.get_nowait()
+            except queue.Empty: break
+            if kind == 'line': self._append(text + '\n', tag)
+            elif kind == 'stats': self._update_stats()
+            elif kind == 'done':
+                self._btn_start.config(state='normal'); self._btn_stop.config(state='disabled')
+                self.target_entry.config(state='normal')
+        if int(self._txt.index('end-1c').split('.')[0]) > 3000:
+            self._txt.config(state='normal'); self._txt.delete('1.0', '1000.0'); self._txt.config(state='disabled')
+        self.after(100, self._poll_output)
+
+
 class WiFiGUI(tk.Tk):
     def __init__(self):
-        super().__init__()
-        self.title("Network Manager (R4 Final)")
-        self.geometry("1100x800")
-        self.minsize(950, 650)
-        self.configure(bg='#1e1e1e')
+        tk.Tk.__init__(self)
+        self._main_thread = threading.get_ident()
+        self.ui_queue = queue.Queue()
+        self._shutting_down = threading.Event()
+        self._after_ids = []
+        self.workers = []
+        self.title(f'Netversity · Network workspace {APP_VERSION}')
+        self.geometry('1180x820'); self.minsize(950, 650); self.configure(bg=BG)
         self.protocol('WM_DELETE_WINDOW', self._on_app_close)
-        
-        self.wifi_icon = None
-        self.eth_icon = None
-        self._load_icons()
- 
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.auto_scan = tk.BooleanVar(value=False)
         self.scan_interval_ms = 15000
-        self.v_verbosity_level = 1
-        
-        self.selected_net: Optional[Dict] = None
-        self.cards = {} 
- 
-        # Comparison State
-        self.comp_syn = tk.BooleanVar(value=False)
-        self.comp_udp = tk.BooleanVar(value=False)
-        self.comp_arp = tk.BooleanVar(value=False)
-        self._comp_thread = None
-        self._comp_stop_evt = threading.Event()
- 
-        # Logging State
+        self._auto_after = None
+        self._network_busy = False
+        self.selected_net = None
+        self.networks = {}; self.saved_profiles = set(); self.wlan_snapshot = {}; self.adapter_snapshot = {}
+        self.current_alias = None
         self.logging_active = False
- 
-        # HTTP Server State
-        self.http_thread = None
-        self.server_dir = os.getcwd()
- 
-        # Network Monitor State
-        self._monitor_engine: Optional[MonitorEngine] = None
-        self.monitor_queue: queue.Queue = queue.Queue(maxsize=5)
-        # graph data series kept on GUI side for rendering
-        self._graph_times: List[float] = []
-        self._graph_dl:    List[float] = []
-        self._graph_ul:    List[float] = []
-        self._graph_lat:   List[float] = []
- 
-        # Thread-safe queues for UI updates
-        self.log_ui_queue = queue.Queue()
-        self.status_queue = queue.Queue() # NEW: Status update queue
-
-        # App-wide shutdown flag + tracked .after() ids, so every polling
-        # loop (background daemon threads AND self.after() reschedulers)
-        # can be told to stop cleanly on close instead of running forever
-        # against a root window that's being torn down.
-        self._shutting_down = threading.Event()
-        self._after_ids: List[str] = []
-
-        # Start background workers
-        self._monitor_queues()
-        threading.Thread(target=self._background_status_updater, daemon=True).start()
- 
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure("TNotebook", background="#1e1e1e", borderwidth=0)
-        style.configure("TNotebook.Tab", background="#333333", foreground="#ffffff", padding=[10, 5])
-        style.map("TNotebook.Tab", background=[("selected", "#4caf50")])
-        style.configure("TFrame", background="#1e1e1e")
-        style.configure("TLabel", background="#1e1e1e", foreground="#ffffff")
-        style.configure("TButton", background="#333333", foreground="#ffffff", borderwidth=1)
-        style.map("TButton", background=[('active', '#4caf50')])
-        style.configure("TLabelframe", background="#1e1e1e", foreground="#ffffff")
-        style.configure("TLabelframe.Label", background="#1e1e1e", foreground="#4caf50")
-        style.configure("TCheckbutton", background="#1e1e1e", foreground="#ffffff")
- 
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True)
-        self.network_tab = ttk.Frame(self.notebook)
-        self.vuln_tab = ttk.Frame(self.notebook)
-        self.topology_tab = ttk.Frame(self.notebook)
-        self.http_tab = ttk.Frame(self.notebook)
-        self.monitor_tab = ttk.Frame(self.notebook)
-        
-        self.notebook.add(self.network_tab, text="Networks")
-        self.notebook.add(self.vuln_tab, text="Vulnerability Assessment")
-        self.notebook.add(self.topology_tab, text="Network Discovery")
-        self.notebook.add(self.http_tab, text="File Server (HTTP)")
-        self.notebook.add(self.monitor_tab, text="Network Monitor")
-        
+        self.log_ui_queue, self.status_queue, self.monitor_queue = queue.Queue(), queue.Queue(), queue.Queue(maxsize=5)
+        self._monitor_engine = None
+        self._graph_times, self._graph_dl, self._graph_ul, self._graph_lat = [], [], [], []
+        self.http_thread = None; self.server_dir = ''
+        self._nmap_runner = None; self._comp_thread = None
+        self._comp_stop_evt = threading.Event()
+        self._scan_session = None; self._last_raw_output = ''; self._scan_rows = []
+        self.v_verbosity_level = 1
+        self.comp_syn, self.comp_udp, self.comp_arp = (tk.BooleanVar(value=False) for _ in range(3))
+        self.device_engine = None; self.device_queue = queue.Queue(maxsize=2); self.device_nodes = []
+        self.baseline = {}; self.baseline_file = None; self._alerted_ips = set()
+        self._style()
+        self._build_shell()
         self._build_network_ui(self.network_tab)
         self._build_vuln_ui(self.vuln_tab)
         self._build_topology_ui(self.topology_tab)
         self._build_http_ui(self.http_tab)
         self._build_monitor_ui(self.monitor_tab)
-        
+        self._show_page('Networks')
+        self._monitor_queues()
+        self._job(self._background_status_updater)
         self._scan_async()
- 
-    def _monitor_queues(self):
-        """Unified monitor for all background thread updates."""
-        # 1. Latency Updates (from performance logging loop)
-        try:
-            while True:
-                latency = self.log_ui_queue.get_nowait()
-                self.lbl_latency.config(text=f"Latency: {latency} ms")
-        except queue.Empty: pass
-        
-        # 2. Status Panel Updates
-        try:
-            while not self.status_queue.empty():
-                data = self.status_queue.get_nowait()
-                self.lbl_type.config(text=f"Active Interface: {data['alias']}")
-                self.lbl_ssid.config(text=f"Name/SSID: {data['ssid']}")
-                self.lbl_ip.config(text=f"IPv4: {data['ip']}")
-                self.lbl_dns1.config(text=f"DNS 1: {data['dns1']}")
-                self.lbl_dns2.config(text=f"DNS 2: {data['dns2']}")
-                self.lbl_sig.config(text=f"Signal: {data['signal']}")
-                self.lbl_auth.config(text=f"Auth: {data['auth']}")
-        except queue.Empty: pass
- 
-        # 3. Network Monitor Updates
-        try:
-            while not self.monitor_queue.empty():
-                payload = self.monitor_queue.get_nowait()
-                self._apply_monitor_payload(payload)
-        except queue.Empty: pass
-        
-        # Only reschedule while the app isn't tearing down. Without this
-        # check, this self.after() chain runs forever - even after
-        # destroy() - since nothing ever broke the reschedule loop.
-        if not self._shutting_down.is_set():
-            self.after(100, self._monitor_queues)
- 
-    def _background_status_updater(self):
-        """
-        Runs in background. Fetches heavy PowerShell data. Never blocks UI.
 
-        Originally `while True:` with no exit condition - a daemon thread,
-        so it shouldn't by itself prevent process exit, but each loop runs
-        several blocking subprocess.run() calls (via run_cmd) that take a
-        real amount of time to return. If shutdown happens mid-call, the
-        exe can sit around until that in-flight call finishes rather than
-        exiting immediately. Checking _shutting_down lets it exit between
-        iterations instead of always waiting for the next process kill.
-        """
-        while not self._shutting_down.is_set():
+    def after(self, ms, func=None, *args):
+        if func is not None and hasattr(self, '_main_thread') and threading.get_ident() != self._main_thread:
+            if not self._shutting_down.is_set(): self.ui_queue.put(lambda: tk.Tk.after(self, ms, func, *args))
+            return None
+        return tk.Tk.after(self, ms, func, *args)
+
+    def _post(self, callback, *args, **kwargs):
+        if not self._shutting_down.is_set(): self.ui_queue.put(lambda: callback(*args, **kwargs))
+
+    def _job(self, work, done=None):
+        def run():
             try:
-                # 1. Get Active Interface (Slow)
-                alias = get_active_interface_alias()
-                
-                # 2. Get Details (Very Slow)
-                info = get_adapter_info(alias) if alias else {}
-                wlan = current_status()
-                
-                # Pack data
-                payload = {
-                    'alias': alias or "None",
-                    'ip': info.get('IPv4', '-'),
-                    'dns1': info.get('DNS1', '-'),
-                    'dns2': info.get('DNS2', '-'), # ADDED THIS BACK
-                    'ssid': wlan.get('SSID', '-'),
-                    'signal': wlan.get('Signal', '-'),
-                    'auth': wlan.get('Authentication', '-')
-                }
-                
-                # Send to UI
-                self.status_queue.put(payload)
-                
-            except Exception: pass
-            
-            # Interruptible sleep: Event.wait() returns immediately once
-            # _shutting_down is set, instead of a flat time.sleep(2) that
-            # would make close() wait up to 2s for this loop to notice.
-            self._shutting_down.wait(timeout=2)
- 
-    def _load_icons(self):
-        icon_size = (50, 40)
-        wifi_path = resource_path("wifi_icon.png")
-        eth_path = resource_path("ethernet_icon.png")
-        if os.path.exists(wifi_path):
-            try:
-                if HAS_PIL:
-                    self.wifi_icon = ImageTk.PhotoImage(Image.open(wifi_path).resize(icon_size, Image.Resampling.LANCZOS))
-                else: 
-                    self.wifi_icon = tk.PhotoImage(file=wifi_path).subsample(4, 4)
-            except: pass
-        if os.path.exists(eth_path):
-            try:
-                if HAS_PIL:
-                    self.eth_icon = ImageTk.PhotoImage(Image.open(eth_path).resize(icon_size, Image.Resampling.LANCZOS))
-                else: 
-                    self.eth_icon = tk.PhotoImage(file=eth_path).subsample(4, 4)
-            except: pass
- 
-    # ---------- Network Monitoring Logic ----------
-    def _toggle_logging(self):
-        if self.logging_active:
-            self.logging_active = False
-            self.btn_log.config(text="Start Logging (RSSI/Latency)")
-            self._set_status("Logging stopped.")
-        else:
-            self.logging_active = True
-            self.btn_log.config(text="Stop Logging")
-            self._set_status("Logging enabled. Writing to wifi_log.csv...")
-            threading.Thread(target=self._logging_loop, daemon=True).start()
- 
-    def _logging_loop(self):
-        filename = "wifi_log.csv"
-        if not os.path.exists(filename):
-            with open(filename, 'w', newline='') as f:
-                csv.writer(f).writerow(["Timestamp", "Interface", "SSID", "Signal (%)", "Latency (ms)"])
- 
-        while self.logging_active:
-            try:
-                active_alias = get_active_interface_alias()
-                wlan_status = current_status()
-                
-                ssid = wlan_status.get('SSID', 'Unknown')
-                sig_str = wlan_status.get('Signal', '0%')
-                signal = int(re.search(r'\d+', sig_str).group()) if re.search(r'\d+', sig_str) else 0
-                
-                # Measure Latency
-                gateway = get_adapter_info(active_alias or "Wi-Fi").get("Gateway")
-                latency = "Timeout"
-                if gateway:
-                    lat_val = measure_latency(gateway)
-                    if lat_val is not None: latency = lat_val
-                
-                self.log_ui_queue.put(latency)
- 
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                with open(filename, 'a', newline='') as f:
-                    csv.writer(f).writerow([timestamp, active_alias, ssid, signal, latency])
-            except Exception as e: print(f"Log error: {e}")
-            # Interruptible: lets shutdown proceed without waiting out a
-            # full flat sleep once logging_active flips to False.
-            self._shutting_down.wait(timeout=2)
- 
-    # ---------- HTTP Server UI ----------
-    def _build_http_ui(self, parent):
-        top_frame = ttk.Frame(parent, padding=15)
-        top_frame.pack(fill="x")
-        cfg_frame = ttk.LabelFrame(top_frame, text="Server Configuration", padding=10)
-        cfg_frame.pack(fill="x", pady=(0, 10))
-        
-        ttk.Label(cfg_frame, text="Root Directory:").grid(row=0, column=0, sticky="w", padx=5)
-        self.http_path_var = tk.StringVar(value=os.getcwd())
-        ttk.Entry(cfg_frame, textvariable=self.http_path_var, width=50, state="readonly").grid(row=0, column=1, padx=5, sticky="ew")
-        ttk.Button(cfg_frame, text="Select Folder...", command=self._select_http_folder).grid(row=0, column=2, padx=5)
-        
-        ttk.Label(cfg_frame, text="Port:").grid(row=1, column=0, sticky="w", padx=5, pady=10)
-        self.http_port_var = tk.StringVar(value="8000")
-        ttk.Entry(cfg_frame, textvariable=self.http_port_var, width=10).grid(row=1, column=1, sticky="w", padx=5)
-        
-        btn_frame = ttk.Frame(top_frame)
-        btn_frame.pack(fill="x", pady=5)
-        self.btn_http_start = ttk.Button(btn_frame, text="Start Server", command=self._start_http_server)
-        self.btn_http_start.pack(side="left", padx=5)
-        self.btn_http_stop = ttk.Button(btn_frame, text="Stop Server", command=self._stop_http_server, state="disabled")
-        self.btn_http_stop.pack(side="left", padx=5)
-        
-        log_frame = ttk.LabelFrame(parent, text="Server Logs", padding=10)
-        log_frame.pack(fill="both", expand=True, padx=15, pady=10)
-        self.http_log_area = scrolledtext.ScrolledText(log_frame, height=15, bg="#2d2d2d", fg="#ffffff", state="disabled")
-        self.http_log_area.pack(fill="both", expand=True)
- 
-    def _select_http_folder(self):
-        folder = filedialog.askdirectory()
-        if folder: self.server_dir = folder; self.http_path_var.set(folder)
- 
-    def _log_http_msg(self, message):
-        def _append():
-            self.http_log_area.config(state="normal")
-            self.http_log_area.insert(tk.END, message)
-            self.http_log_area.see(tk.END)
-            self.http_log_area.config(state="disabled")
-        self.after(0, _append)
- 
-    def _start_http_server(self):
-        try: port = int(self.http_port_var.get())
-        except: messagebox.showerror("Error", "Port must be int"); return
-        if self.http_thread and self.http_thread.is_alive(): return
-        self.http_thread = HttpServerThread(port, self.server_dir, self._log_http_msg)
-        self.http_thread.start()
-        self.btn_http_start.config(state="disabled"); self.btn_http_stop.config(state="normal")
-        self._log_http_msg(f"--- Started on Port {port} ---\n")
- 
-    def _stop_http_server(self):
-        # httpd.shutdown() blocks until serve_forever()'s loop notices the
-        # shutdown flag (polled periodically), which can stall briefly.
-        # Calling it directly on the Tk main thread froze the whole GUI —
-        # no redraws, no queue draining — especially while other engines
-        # (Discovery, Monitor, Nmap) were already busy. Run it on a
-        # disposable background thread instead so the main loop never blocks.
-        if self.http_thread:
-            t = self.http_thread
-            self.http_thread = None
-            threading.Thread(target=t.stop, daemon=True).start()
-        self.btn_http_start.config(state="normal"); self.btn_http_stop.config(state="disabled")
- 
-    # ---------- network UI ----------
-    def _build_network_ui(self, parent):
-        top = ttk.Frame(parent, padding=15)
-        top.pack(fill="x")
-        self.btn_scan = ttk.Button(top, text="Refresh Scan", command=self._scan_async)
-        self.btn_scan.pack(side="left", padx=(0,10))
-        self.btn_connect = ttk.Button(top, text="Connect / Enable", command=self._connect_async)
-        self.btn_connect.pack(side="left", padx=10)
-        self.btn_disconnect = ttk.Button(top, text="Disconnect / Disable", command=self._disconnect_async)
-        self.btn_disconnect.pack(side="left", padx=10)
-        self.btn_auto = ttk.Button(top, text="Auto-Connect (WiFi)", command=self._auto_reconnect_async)
-        self.btn_auto.pack(side="left", padx=10)
- 
-        # LOGGING BUTTON (NEW)
-        self.btn_log = ttk.Button(top, text="Start Logging (RSSI/Latency)", command=self._toggle_logging)
-        self.btn_log.pack(side="left", padx=20)
- 
-        # PING BUTTON
-        self.btn_ping = ttk.Button(top, text="Ping", command=self._open_ping_window)
-        self.btn_ping.pack(side="left", padx=(0, 10))
- 
-        extra_opts = ttk.Frame(top)
-        extra_opts.pack(side="right")
-        ttk.Button(extra_opts, text="Settings", command=self._open_adapter_settings).pack(side="left", padx=5)
-        chk = ttk.Checkbutton(extra_opts, text="Auto-Scan (15s)", variable=self.auto_scan, command=self._toggle_auto_scan)
-        chk.pack(side="left", padx=5)
- 
-        canvas_frame = tk.Frame(parent, bg='#1e1e1e')
-        canvas_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        self.canvas = tk.Canvas(canvas_frame, bg='#1e1e1e', highlightthickness=0)
-        self.scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=self.canvas.yview)
-        self.cards_frame = tk.Frame(self.canvas, bg='#1e1e1e')
-        self.cards_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.create_window((0, 0), window=self.cards_frame, anchor="nw")
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.scrollbar.pack(side="right", fill="y")
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
- 
-        status_frame = ttk.LabelFrame(parent, text="Current Network Status", padding=10)
-        status_frame.pack(fill="x", padx=10, pady=10)
-        self.lbl_type = ttk.Label(status_frame, text="Active Interface: -", font=("Segoe UI", 9, "bold"))
-        self.lbl_ssid = ttk.Label(status_frame, text="Name/SSID: -")
-        self.lbl_auth = ttk.Label(status_frame, text="Auth: -")
-        self.lbl_sig  = ttk.Label(status_frame, text="Signal: -")
-        self.lbl_ip   = ttk.Label(status_frame, text="IPv4: -")
-        self.lbl_dns1 = ttk.Label(status_frame, text="DNS 1: -")
-        self.lbl_dns2 = ttk.Label(status_frame, text="DNS 2: -")
-        
-        # Latency Label (NEW)
-        self.lbl_latency = ttk.Label(status_frame, text="Latency: - ms", font=("Segoe UI", 9, "bold"), foreground="#4caf50")
-        
-        self.lbl_type.grid(row=0, column=0, sticky="w", padx=10, pady=2)
-        self.lbl_ssid.grid(row=0, column=1, sticky="w", padx=10, pady=2)
-        self.lbl_auth.grid(row=0, column=2, sticky="w", padx=10, pady=2)
-        self.lbl_sig.grid(row=0, column=3, sticky="w", padx=10, pady=2)
-        self.lbl_ip.grid(row=1, column=0, sticky="w", padx=10, pady=2)
-        self.lbl_dns1.grid(row=1, column=1, sticky="w", padx=10, pady=2)
-        self.lbl_dns2.grid(row=1, column=2, sticky="w", padx=10, pady=2)
-        self.lbl_latency.grid(row=1, column=3, sticky="w", padx=10, pady=2)
-        
-        self.statusbar = ttk.Label(parent, text="Ready", anchor="w", padding=5, background="#333333")
-        self.statusbar.pack(fill="x", side="bottom")
- 
-    def _on_mousewheel(self, event):
-        self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
- 
-    def _populate_cards(self, nets: List[Dict]):
-        for widget in self.cards_frame.winfo_children(): widget.destroy()
-        self.cards = {}
-        current_wlan = current_status().get('SSID', '')
-        saved_profiles = list_saved_profiles()
-        row, col, MAX_COLS = 0, 0, 2
-        for net in nets:
-            ssid = net['ssid']
-            auth = net.get('auth', 'Unknown')
-            net_type = net.get('type', 'wifi')
-            state = net.get('state', '')
-            signal_val = net.get('signal', 0)
-            is_connected = (ssid == current_wlan) if net_type == 'wifi' else (state == 'Connected')
-            is_saved = (ssid in saved_profiles) if net_type == 'wifi' else True
-            
-            card_bg = '#2d2d2d'
-            card = tk.Frame(self.cards_frame, bg=card_bg, padx=15, pady=15, highlightthickness=1, highlightbackground="#444444")
-            card.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
-            
-            icon_img = self.eth_icon if net_type == 'wired' else self.wifi_icon
-            if icon_img:
-                icon_lbl = tk.Label(card, image=icon_img, bg=card_bg)
-                icon_lbl.grid(row=0, column=0, rowspan=5, padx=(0,15))
-                icon_lbl.bind("<Button-1>", lambda e, n=net: self._on_card_click(n))
-            else:
-                txt = "[ETH]" if net_type == 'wired' else "[WIFI]"
-                tk.Label(card, text=txt, bg=card_bg, fg="#666").grid(row=0, column=0, rowspan=5, padx=(0,15))
- 
-            title_fg = "#ffffff"
-            if is_connected: status_text, status_color = "Connected", "#4caf50"
-            elif is_saved: status_text, status_color = "Saved" if net_type == 'wifi' else "Disconnected", "#4caf50" if net_type == 'wifi' else "#aaaaaa"
-            else: status_text, status_color = "Available", "#aaaaaa"
- 
-            name_lbl = tk.Label(card, text=ssid, font=("Segoe UI", 12, "bold"), bg=card_bg, fg=title_fg, anchor="w")
-            name_lbl.grid(row=0, column=1, sticky="w")
-            stat_lbl = tk.Label(card, text=status_text, font=("Segoe UI", 9, "bold"), bg=card_bg, fg=status_color, anchor="w")
-            stat_lbl.grid(row=1, column=1, sticky="w")
-            
-            if net_type == 'wifi':
-                sig_str = f"{signal_to_bars(signal_val)} {signal_val}%"
-                sig_lbl = tk.Label(card, text=sig_str, font=("Segoe UI", 9), bg=card_bg, fg="#cccccc", anchor="w")
-                sig_lbl.grid(row=2, column=1, sticky="w")
-                next_row = 3
-            else: next_row = 2
- 
-            sec_lbl = tk.Label(card, text=f"Security: {auth}" if net_type == 'wifi' else "Wired Interface", font=("Segoe UI", 9), bg=card_bg, fg="#aaaaaa", anchor="w")
-            sec_lbl.grid(row=next_row, column=1, sticky="w")
-            
-            conn_txt = "Auto-Connect" if (net_type=='wifi' and is_saved) else "Manual Connection" if net_type=='wifi' else "Physical Adapter"
-            conn_lbl = tk.Label(card, text=conn_txt, font=("Segoe UI", 9), bg=card_bg, fg="#aaaaaa", anchor="w")
-            conn_lbl.grid(row=next_row+1, column=1, sticky="w")
- 
-            widgets_to_bind = [card, name_lbl, stat_lbl, sec_lbl, conn_lbl]
-            if net_type == 'wifi': widgets_to_bind.append(sig_lbl)
-            for w in widgets_to_bind: w.bind("<Button-1>", lambda e, n=net: self._on_card_click(n))
- 
-            self.cards[ssid] = card
-            col += 1
-            if col >= MAX_COLS: col = 0; row += 1
-        for i in range(MAX_COLS): self.cards_frame.grid_columnconfigure(i, weight=1)
- 
-    def _on_card_click(self, net_data: Dict):
-        ssid = net_data['ssid']
-        if self.selected_net:
-            old_ssid = self.selected_net['ssid']
-            if old_ssid in self.cards:
-                self.cards[old_ssid].configure(bg='#2d2d2d', highlightbackground="#444444")
-                for child in self.cards[old_ssid].winfo_children(): child.configure(bg='#2d2d2d')
-        
-        self.selected_net = net_data
-        if ssid in self.cards:
-            sel_bg = '#404040'
-            self.cards[ssid].configure(bg=sel_bg, highlightbackground="#4caf50")
-            for child in self.cards[ssid].winfo_children(): child.configure(bg=sel_bg)
-        
-        type_lbl = "Wired" if net_data.get('type') == 'wired' else "WiFi"
-        self._set_status(f"Selected: {ssid} ({type_lbl})")
- 
-    # ---------- vulnerability tab UI
-    def _build_vuln_ui(self, parent):
-        ctrl = ttk.Frame(parent, padding=8); ctrl.pack(fill="x")
-        ttk.Label(ctrl, text="Target(s):").pack(side="left")
-        self.v_target = ttk.Entry(ctrl, width=40); self.v_target.pack(side="left", padx=(6,10)); self.v_target.insert(0, "192.168.1.0/24")
-        ttk.Label(ctrl, text="Scan Type:").pack(side="left")
-        self.v_preset = tk.StringVar(value="Custom")
-        preset_cb = ttk.Combobox(ctrl, textvariable=self.v_preset, values=list(NMAP_PRESETS.keys()), width=22, state="readonly")
-        preset_cb.pack(side="left", padx=(6,6))
-        preset_cb.bind("<<ComboboxSelected>>", lambda e: self._on_preset_change())
-        help_btn = ttk.Button(ctrl, text="(?)", width=3, command=self._open_nmap_help)
-        help_btn.pack(side="left", padx=(4,2))
-        ttk.Label(ctrl, text="Extra Flags:").pack(side="left", padx=(8,0))
-        self.v_extra = ttk.Entry(ctrl, width=28); self.v_extra.pack(side="left", padx=(6,6))
-        self.v_verb_label = ttk.Label(ctrl, text=f"Verbosity: {self.v_verbosity_level}", width=14)
-        self.v_verb_label.pack(side="left", padx=(10,2))
-        self.v_verb_btn = ttk.Button(ctrl, text="V", width=3, command=self._cycle_verbosity)
-        self.v_verb_btn.pack(side="left")
- 
-        # NEW: Comparison Mode UI
-        comp_frame = ttk.LabelFrame(parent, text="Comparison Mode (Compare Scan Results)", padding=5)
-        comp_frame.pack(fill="x", padx=8, pady=4)
-        ttk.Checkbutton(comp_frame, text="SYN (-sS)", variable=self.comp_syn).pack(side="left", padx=10)
-        ttk.Checkbutton(comp_frame, text="UDP (-sU)", variable=self.comp_udp).pack(side="left", padx=10)
-        ttk.Checkbutton(comp_frame, text="ARP Ping (-sn -PR)", variable=self.comp_arp).pack(side="left", padx=10)
-        ttk.Label(comp_frame, text="(Admin required for comparison)", font=("Segoe UI", 8)).pack(side="right", padx=5)
- 
-        btns = ttk.Frame(parent, padding=(8,0)); btns.pack(fill="x")
-        self.v_start_btn = ttk.Button(btns, text="Start Scan", command=self._start_nmap_scan); self.v_start_btn.pack(side="left", padx=6)
-        self.v_stop_btn = ttk.Button(btns, text="Stop Scan", command=self._stop_nmap_scan, state="disabled"); self.v_stop_btn.pack(side="left")
-        self.v_save_btn = ttk.Button(btns, text="Save Output (TXT)", command=self._save_nmap_output, state="disabled"); self.v_save_btn.pack(side="left", padx=6)
-        self.v_clear_btn = ttk.Button(btns, text="Clear Output", command=self._clear_vuln_output); self.v_clear_btn.pack(side="right", padx=6)
- 
-        txt_frame = ttk.LabelFrame(parent, text="Live Nmap Output / Comparison Report", padding=6); txt_frame.pack(fill="both", expand=True, padx=8, pady=8)
-        self.v_output = scrolledtext.ScrolledText(txt_frame, wrap='word', height=20, bg="#2d2d2d", fg="#ffffff", insertbackground="white")
-        self.v_output.pack(fill="both", expand=True)
-        self.v_output.config(state='disabled')
- 
-        self._nmap_runner: Optional[NmapRunner] = None
-        self._last_raw_output: str = ""
- 
-        if not nmap_installed():
-            self._append_vout("[!] Nmap not found on this system. Please install from https://nmap.org/download.html\n")
-            self._append_vout("Scans will not run until 'nmap' is available in your PATH.\n")
- 
+                result = work()
+                if done: self._post(done, result)
+            except Exception as exc:
+                self._post(self._set_status, f'Operation failed: {exc}')
+        thread = threading.Thread(target=run, daemon=True)
+        self.workers = [t for t in self.workers if t.is_alive()]
+        self.workers.append(thread); thread.start()
+        return thread
+
+    def _style(self):
+        self.option_add('*Font', ('Segoe UI', 10))
+        style = ttk.Style(self); style.theme_use('clam')
+        style.configure('.', background=BG, foreground=TEXT, bordercolor=LINE, troughcolor=BG,
+                        fieldbackground=FIELD, lightcolor=LINE, darkcolor=LINE, focuscolor=ACCENT)
+        style.configure('TFrame', background=BG)
+        style.configure('Panel.TFrame', background=PANEL)
+        style.configure('TLabel', background=BG, foreground=TEXT)
+        style.configure('Muted.TLabel', foreground=MUTED)
+        style.configure('Title.TLabel', font=('Segoe UI', 22, 'bold'))
+        style.configure('Heading.TLabel', font=('Segoe UI', 12, 'bold'))
+        style.configure('TButton', background=FIELD, foreground=TEXT, padding=(12, 8), borderwidth=1)
+        style.map('TButton', background=[('active', '#34475f'), ('disabled', '#222b37')], foreground=[('disabled', '#778698')])
+        style.configure('Accent.TButton', background='#365f93', foreground='#ffffff')
+        style.map('Accent.TButton', background=[('active', '#487cb5'), ('disabled', '#27354a')])
+        style.configure('Nav.TButton', anchor='w', padding=(16, 12), background=BG, borderwidth=0)
+        style.configure('Selected.Nav.TButton', background='#263c58', foreground=ACCENT)
+        style.configure('TEntry', padding=7, insertcolor=TEXT)
+        style.configure('TCombobox', padding=6, arrowsize=15)
+        style.map('TCombobox', fieldbackground=[('readonly', FIELD)], foreground=[('readonly', TEXT)])
+        style.configure('TNotebook', background=BG, borderwidth=0)
+        style.configure('TNotebook.Tab', padding=(16, 9), background=PANEL)
+        style.map('TNotebook.Tab', background=[('selected', FIELD)], foreground=[('selected', ACCENT)])
+        style.configure('Treeview', background=PANEL, fieldbackground=PANEL, foreground=TEXT, rowheight=43, borderwidth=0)
+        style.configure('Treeview.Heading', background=FIELD, foreground=MUTED, padding=(8, 10), font=('Segoe UI', 10, 'bold'))
+        style.map('Treeview', background=[('selected', '#2b4565')], foreground=[('selected', '#ffffff')])
+        style.configure('TLabelframe', padding=12, bordercolor=LINE)
+        style.configure('TLabelframe.Label', foreground=MUTED)
+
+    def _build_shell(self):
+        top = ttk.Frame(self, padding=(22, 12)); top.pack(fill='x')
+        ttk.Label(top, text='NETVERSITY', font=('Segoe UI', 12, 'bold')).pack(side='left')
+        ttk.Label(top, text='Network workspace', style='Muted.TLabel').pack(side='left', padx=16)
+        ttk.Label(top, text='Administrator' if is_admin() else 'Standard access', style='Muted.TLabel').pack(side='right')
+        ttk.Separator(self).pack(fill='x')
+        body = ttk.Frame(self); body.pack(fill='both', expand=True)
+        nav = ttk.Frame(body, width=175, padding=(8, 18)); nav.pack(side='left', fill='y'); nav.pack_propagate(False)
+        self.pages, self.nav_buttons = {}, {}
+        content = ttk.Frame(body); content.pack(side='left', fill='both', expand=True)
+        self.context = tk.StringVar(value='Detecting active connection…')
+        ttk.Label(content, textvariable=self.context, padding=(22, 12), foreground=GOOD,
+                  wraplength=800).pack(fill='x')
+        ttk.Separator(content).pack(fill='x')
+        holder = ttk.Frame(content); holder.pack(fill='both', expand=True)
+        holder.rowconfigure(0, weight=1); holder.columnconfigure(0, weight=1)
+        mapping = [('Networks', 'network_tab'), ('Devices', 'topology_tab'), ('Security scans', 'vuln_tab'), ('Diagnostics', 'monitor_tab'), ('File sharing', 'http_tab')]
+        for name, attr in mapping:
+            page = ttk.Frame(holder, padding=(22, 16)); page.grid(row=0, column=0, sticky='nsew')
+            setattr(self, attr, page); self.pages[name] = page
+            button = ttk.Button(nav, text=name, style='Nav.TButton', command=lambda n=name: self._show_page(n))
+            button.pack(fill='x', pady=3); self.nav_buttons[name] = button
+        ttk.Button(nav, text='Open logs folder', command=lambda: os.startfile(str(DATA_DIR))).pack(side='bottom', fill='x', pady=8)
+        ttk.Label(nav, text=f'Version {APP_VERSION}', style='Muted.TLabel').pack(side='bottom', pady=10)
+        self.statusbar = ttk.Label(self, text='Ready', padding=(20, 9), foreground=MUTED)
+        self.statusbar.pack(side='bottom', fill='x')
+
+    def _show_page(self, name):
+        self.pages[name].tkraise()
+        for key, button in self.nav_buttons.items(): button.config(style='Selected.Nav.TButton' if key == name else 'Nav.TButton')
+
+    def _set_status(self, text):
+        self.statusbar.config(text=text)
+
     def _open_nmap_help(self):
-        try: HelpWindow(self, title="Nmap Flags Reference", text=NMAP_FLAGS_HELP)
-        except Exception as e: messagebox.showerror("Help window error", str(e))
- 
-    def _on_preset_change(self):
-        sel = self.v_preset.get()
-        if sel == "Custom": self.v_extra.focus_set()
-        else:
-            flags = NMAP_PRESETS.get(sel, "")
-            self.v_extra.delete(0, tk.END)
-            self.v_extra.insert(0, flags)
- 
-    def _append_vout(self, text: str):
-        def _update_ui():
-            try:
-                self.v_output.config(state='normal')
-                self.v_output.insert(tk.END, text)
-                if not text.endswith("\n"): self.v_output.insert(tk.END, "\n")
-                self.v_output.see(tk.END)
-                self.v_output.config(state='disabled')
-                self._last_raw_output += text + ("\n" if not text.endswith("\n") else "")
-            except Exception: pass
-        
-        # Safely push the update to the main Tkinter thread
-        self.after(0, _update_ui)
- 
-    def _clear_vuln_output(self):
-        try:
-            self.v_output.config(state='normal')
-            self.v_output.delete('1.0', tk.END)
-            self.v_output.config(state='disabled')
-            self._last_raw_output = ""
-            self.v_save_btn.config(state='disabled')
-        except Exception: pass
- 
-    def _cycle_verbosity(self):
-        old = self.v_verbosity_level
-        new = old + 1
-        if new > 3: new = 1
-        self.v_verbosity_level = new
-        self.v_verb_label.config(text=f"Verbosity: {self.v_verbosity_level}")
-        verbosity_flag = "-" + "v" * self.v_verbosity_level
-        cur_extra = self.v_extra.get().strip()
-        cur_extra_clean = re.sub(r'\s*-v{1,3}\b', '', cur_extra)
-        self.v_extra.delete(0, tk.END)
-        if cur_extra_clean: self.v_extra.insert(0, f"{verbosity_flag} {cur_extra_clean}".strip())
-        else: self.v_extra.insert(0, verbosity_flag)
-        self._append_vout(f"[Verbosity set to {self.v_verbosity_level}]\n")
- 
-    def _start_nmap_scan(self):
-        nmap_exe = find_nmap_binary()
-        if not nmap_exe:
-            messagebox.showerror("Nmap not found", "Nmap is not installed.")
-            return
-        
-        target = self.v_target.get().strip()
-        if not target: messagebox.showerror("Invalid target", "Please enter a target."); return
- 
-        # CHECK COMPARISON MODE
-        do_syn = self.comp_syn.get()
-        do_udp = self.comp_udp.get()
-        do_arp = self.comp_arp.get()
-        
-        if do_syn or do_udp or do_arp:
-            if not is_admin():
-                messagebox.showerror("Permission Error", "Comparison Mode (SYN/UDP/ARP) requires Administrator privileges.\nPlease restart the app as Admin.")
-                return
-            
-            self._clear_vuln_output()
-            self.v_start_btn.config(state="disabled")
-            self.v_stop_btn.config(state="normal")
-            self._comp_stop_evt.clear()
-            self._comp_thread = threading.Thread(target=self._run_comparison_scan, args=(target, do_syn, do_udp, do_arp, nmap_exe), daemon=True)
-            self._comp_thread.start()
-            return
-        
-        # STANDARD SCAN LOGIC
-        preset = self.v_preset.get()
-        extra = self.v_extra.get().strip()
-        flags = ""
-        if preset and preset in NMAP_PRESETS and preset != "Custom": flags = NMAP_PRESETS[preset]
-        verbosity_flag = "-" + "v" * self.v_verbosity_level
-        extra_clean = re.sub(r'\s*-v{1,3}\b', '', extra)
-        if extra_clean: flags = (flags + " " + verbosity_flag + " " + extra_clean).strip()
-        else: flags = (flags + " " + verbosity_flag).strip()
- 
-        if "-sS" in flags or "-O" in flags or "-A" in flags:
-            if not is_admin():
-                if not messagebox.askyesno("Privileged flags", "Privileged flags detected. Continue?"): return
- 
-        self._clear_vuln_output()
-        self.v_output.config(state='normal'); self.v_output.insert(tk.END, f"Command: {nmap_exe} {flags} {target}\n"); self.v_output.config(state='disabled')
-        self._last_raw_output += f"Command: {nmap_exe} {flags} {target}\n"
- 
-        self.v_start_btn.config(state="disabled")
-        self.v_stop_btn.config(state="normal")
-        self.v_save_btn.config(state="disabled")
- 
-        def update_cb(line): self._append_vout(line)
-        def finished_cb(success, _):
-            # finished_cb runs on NmapRunner's background thread — widget
-            # updates must be deferred to the main thread via .after().
-            self.after(0, lambda: self.v_start_btn.config(state="normal"))
-            self.after(0, lambda: self.v_stop_btn.config(state="disabled"))
-            if self._last_raw_output.strip():
-                self.after(0, lambda: self.v_save_btn.config(state="normal"))
-            if success:
-                self._append_vout("[Scan completed]")
-                self._append_vout(build_security_verdict_report(self._last_raw_output))
-            else:
-                self._append_vout("[Scan ended with errors or was stopped]")
-        self._nmap_runner = NmapRunner(target, flags, update_cb, finished_cb)
-        self._nmap_runner.start()
- 
-    def _run_comparison_scan(self, target, do_syn, do_udp, do_arp, nmap_exe):
-        self._append_vout("=== STARTING COMPARISON ENGINE ===\n")
-        results = {}
-        
-        # Helper to run sequential scans without blocking the thread's ability to stop
-        def run_one(name, flags):
-            if self._comp_stop_evt.is_set(): return None
-            self._append_vout(f"\n[+] Running {name} Scan on {target}...\nFlags: {flags}\n")
-            cmd = f'"{nmap_exe}" {flags} {target}'
-            try:
-                # Use Popen instead of run() so we can read output line-by-line and allow cancellation
-                proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                         creationflags=_NO_WINDOW_FLAGS)
-                
-                output_lines = []
-                # Read line by line to check for the stop event continuously
-                for line in iter(proc.stdout.readline, ''):
-                    if self._comp_stop_evt.is_set():
-                        proc.terminate()
-                        # See note in NmapRunner.stop(): /T is required to kill
-                        # nmap.exe itself, since shell=True makes proc.pid the
-                        # cmd.exe wrapper's PID, not nmap's.
-                        subprocess.run(f'taskkill /F /T /PID {proc.pid}', shell=True, stdout=subprocess.DEVNULL,
-                                        creationflags=_NO_WINDOW_FLAGS)
-                        return None
-                    output_lines.append(line)
-                    
-                proc.wait()
-                return "".join(output_lines)
-            except Exception as e:
-                self._append_vout(f"[!] Error: {e}\n")
-                return None
- 
-        # 1. SYN Scan
-        if do_syn:
-            out = run_one("SYN (TCP)", "-sS -T4") 
-            if out: results['SYN'] = out
-        
-        # 2. UDP Scan
-        if do_udp:
-            out = run_one("UDP", "-sU -T4") 
-            if out: results['UDP'] = out
-            
-        # 3. ARP Scan
-        if do_arp:
-            out = run_one("ARP (Host Discovery)", "-sn -PR")
-            if out: results['ARP'] = out
- 
-        if self._comp_stop_evt.is_set():
-            self._append_vout("\n[Comparison Aborted by User]\n")
-        else:
-            self._append_vout("\n=== GENERATING COMPARISON REPORT ===\n")
-            self._generate_comparison_report(results)
- 
-        self.after(0, lambda: self.v_start_btn.config(state="normal"))
-        self.after(0, lambda: self.v_stop_btn.config(state="disabled"))
-        if self._last_raw_output.strip(): 
-            self.after(0, lambda: self.v_save_btn.config(state="normal"))
- 
-    def _generate_comparison_report(self, results):
-        report = []
-        
-        # Simple Parsers
-        def extract_hosts(text):
-            return set(re.findall(r"Nmap scan report for .*?([\d\.]+)", text))
-        
-        def extract_ports(text):
-            # Returns dict {ip: [port/proto]}
-            mapping = {}
-            curr_ip = None
-            for line in text.splitlines():
-                m_ip = re.search(r"Nmap scan report for .*?([\d\.]+)", line)
-                if m_ip: 
-                    curr_ip = m_ip.group(1)
-                    mapping[curr_ip] = []
-                m_port = re.search(r"(\d+)/(tcp|udp)\s+open", line)
-                if m_port and curr_ip:
-                    mapping[curr_ip].append(f"{m_port.group(1)}/{m_port.group(2)}")
-            return mapping
- 
-        # Compare Hosts (ARP vs others)
-        arp_hosts = extract_hosts(results.get('ARP', ''))
-        syn_hosts = extract_hosts(results.get('SYN', ''))
-        udp_hosts = extract_hosts(results.get('UDP', ''))
-        
-        all_hosts = arp_hosts | syn_hosts | udp_hosts
-        report.append(f"Total Unique Hosts Discovered: {len(all_hosts)}")
-        
-        if 'ARP' in results:
-            report.append(f"ARP Scan found: {len(arp_hosts)} hosts.")
-            missed = all_hosts - arp_hosts
-            if missed: report.append(f"  - Missed by ARP (blocked?): {', '.join(missed)}")
-        
-        # Compare Ports (SYN vs UDP)
-        syn_ports = extract_ports(results.get('SYN', ''))
-        udp_ports = extract_ports(results.get('UDP', ''))
-        
-        for ip in sorted(all_hosts):
-            report.append(f"\nTarget: {ip}")
-            s_p = syn_ports.get(ip, [])
-            u_p = udp_ports.get(ip, [])
-            
-            if 'SYN' in results: report.append(f"  - TCP Open Ports (SYN): {len(s_p)} -> {', '.join(s_p) if s_p else 'None'}")
-            if 'UDP' in results: report.append(f"  - UDP Open Ports:       {len(u_p)} -> {', '.join(u_p) if u_p else 'None'}")
-            
-            if s_p and u_p:
-                report.append("  - Services found on both TCP and UDP (Rare):")
-                # Check for matching port numbers
-                s_nums = {p.split('/')[0] for p in s_p}
-                u_nums = {p.split('/')[0] for p in u_p}
-                common = s_nums & u_nums
-                if common: report.append(f"    Ports: {', '.join(common)}")
-                else: report.append("    None")
+        HelpWindow(self, title='Nmap flags reference', text=NMAP_FLAGS_HELP)
 
-        # --- Security Risk Assessment: reuse the same risk engine the
-        # standard scan uses, merging whatever SYN/UDP results we have ---
-        merged_hosts: Dict[str, List[Tuple[int, str, str]]] = {}
-        for key in ('SYN', 'UDP'):
-            if key in results:
-                for ip, ports in extract_hosts_and_ports(results[key]).items():
-                    merged_hosts.setdefault(ip, []).extend(ports)
-        if merged_hosts:
-            report.append(format_security_verdict(merged_hosts))
+    def _select_http_folder(self):
+        folder = filedialog.askdirectory(parent=self, title='Choose the folder to share')
+        if folder:
+            self.server_dir = folder; self.http_path_var.set(folder)
 
-        self._append_vout("\n".join(report))
-        self._append_vout("\n[End of Report]")
- 
-    def _stop_nmap_scan(self):
-        # Handle stopping comparison thread
-        if self._comp_thread and self._comp_thread.is_alive():
-            self._comp_stop_evt.set()
-            self._append_vout("\n[Stopping Comparison...]\n")
-            return
- 
-        if self._nmap_runner:
-            self._append_vout("[Stopping scan...]\n")
-            try: self._nmap_runner.stop()
-            except Exception: pass
-            self._nmap_runner = None
-            self.v_start_btn.config(state="normal")
-            self.v_stop_btn.config(state="disabled")
-            self._append_vout("[Scan stopped by user]")
- 
     def _save_nmap_output(self):
         if not self._last_raw_output.strip(): return
-        timestr = time.strftime("%Y-%m-%d_%H-%M-%S")
-        default = f"nmap_scan_{timestr}.txt"
-        fld = filedialog.asksaveasfilename(defaultextension=".txt", initialfile=default, filetypes=[("Text Files","*.txt"),("All files","*.*")])
-        if not fld: return
-        try:
-            with open(fld, "w", encoding="utf-8") as f: f.write(self._last_raw_output)
-            messagebox.showinfo("Saved", f"Scan output saved to:\n{fld}")
-        except Exception as e: messagebox.showerror("Save error", str(e))
- 
-    # ---------- topology tab
-    def _build_topology_ui(self, parent):
-        lbl = ttk.Label(parent, text="Network Discovery Map", font=("Segoe UI", 12, "bold")); lbl.pack(anchor="w", padx=10, pady=(10, 4))
-        ttk.Label(parent, text="Open the dynamic network discovery visualizer (separate window).").pack(anchor="w", padx=10)
-        ttk.Button(parent, text="Open Discovery Map", command=self._open_topology_window).pack(anchor="w", padx=10, pady=10)
-        if nx is None or plt is None:
-            ttk.Label(parent, text="Visualizer requires 'networkx' and 'matplotlib'.", foreground="red").pack(anchor="w", padx=10, pady=(6,0))
- 
-    def _open_topology_window(self):
-        try: TopoWindow(self, scan_interval=30)
-        except NameError: messagebox.showerror("Error", "Topology modules missing.")
- 
-    # ================================================================
-    # Network Monitor Tab
-    # ================================================================
- 
-    def _build_monitor_ui(self, parent):
-        """
-        Minimalist two-column layout:
-          Left  column : metric tiles (stacked vertically, compact)
-          Right column : graph panel (two stacked sub-plots, narrower)
- 
-        Crash fix: Figure is created with mpl_figure.Figure() — never
-        touches the shared plt state machine, so it cannot race with
-        TopoWindow's draw calls.
-        """
-        # ── Top control bar ──────────────────────────────────────────────
-        ctrl = ttk.Frame(parent, padding=(10, 6))
-        ctrl.pack(fill="x")
- 
-        self.btn_mon_start = ttk.Button(ctrl, text="▶  Start",
-                                        command=self._start_monitor)
-        self.btn_mon_start.pack(side="left", padx=(0, 4))
- 
-        self.btn_mon_stop = ttk.Button(ctrl, text="■  Stop",
-                                       command=self._stop_monitor,
-                                       state="disabled")
-        self.btn_mon_stop.pack(side="left", padx=(0, 16))
- 
-        ttk.Label(ctrl, text="Interval (s):").pack(side="left")
-        self.mon_interval_var = tk.StringVar(value="1")
-        ttk.Entry(ctrl, textvariable=self.mon_interval_var,
-                  width=4).pack(side="left", padx=(4, 16))
- 
-        self.mon_status_lbl = ttk.Label(ctrl, text="● Idle",
-                                        font=("Segoe UI", 9),
-                                        foreground="#888888")
-        self.mon_status_lbl.pack(side="left")
- 
-        # ── Body: left tiles + right graph ───────────────────────────────
-        body = tk.Frame(parent, bg="#1e1e1e")
-        body.pack(fill="both", expand=True, padx=10, pady=(4, 8))
- 
-        # ── LEFT: metric tiles (fixed width, full height) ─────────────────
-        left = tk.Frame(body, bg="#1e1e1e", width=220)
-        left.pack(side="left", fill="y", padx=(0, 8))
-        left.pack_propagate(False)
- 
-        tile_defs = [
-            ("LATENCY",      "—  ms",    "#4caf50", "_mon_lbl_lat"),
-            ("JITTER",       "—  ms",    "#2196F3", "_mon_lbl_jit"),
-            ("PACKET LOSS",  "—  %",     "#FF5722", "_mon_lbl_loss"),
-            ("DOWNLOAD ↓",   "—  Mbps",  "#00BCD4", "_mon_lbl_dl"),
-            ("UPLOAD ↑",     "—  Mbps",  "#FF9800", "_mon_lbl_ul"),
-            ("GATEWAY",      "—",        "#aaaaaa", "_mon_lbl_gw"),
-            ("INTERFACE",    "—",        "#aaaaaa", "_mon_lbl_iface"),
-        ]
- 
-        for title, init_val, color, attr in tile_defs:
-            tile = tk.Frame(left, bg="#252525",
-                            highlightthickness=1,
-                            highlightbackground="#383838")
-            tile.pack(fill="x", pady=3)
- 
-            tk.Label(tile, text=title,
-                     font=("Segoe UI", 7, "bold"),
-                     bg="#252525", fg="#555555",
-                     anchor="w", padx=10, pady=4).pack(fill="x")
- 
-            val_lbl = tk.Label(tile, text=init_val,
-                               font=("Consolas", 13, "bold"),
-                               bg="#252525", fg=color,
-                               anchor="w", padx=10, pady=4)
-            val_lbl.pack(fill="x")
-            setattr(self, attr, val_lbl)
- 
-        # ── RIGHT: graph panel — expands to fill remaining window space ──
-        right = tk.Frame(body, bg="#1e1e1e")
-        right.pack(side="left", fill="both", expand=True, padx=(0, 0))
- 
-        graph_lbl = tk.Label(right, text="LIVE ACTIVITY",
-                             font=("Segoe UI", 7, "bold"),
-                             bg="#1e1e1e", fg="#555555", anchor="w")
-        graph_lbl.pack(anchor="w", pady=(2, 4))
- 
-        graph_container = tk.Frame(right, bg="#1e1e1e")
-        graph_container.pack(fill="both", expand=True)
- 
-        if mpl_figure is not None and FigureCanvasTkAgg is not None:
-            # ISOLATED Figure — no plt.subplots(), never touches shared state
-            self._mon_fig = mpl_figure.Figure(facecolor="#1a1a1a")
-            self._mon_fig.subplots_adjust(
-                hspace=0.60, left=0.14, right=0.96, top=0.92, bottom=0.09)
- 
-            # ── Throughput subplot (fixed 0–100 Mbps, 20 Mbps steps) ──────
-            ax_tp = self._mon_fig.add_subplot(2, 1, 1)
-            ax_tp.set_facecolor("#222222")
-            ax_tp.set_title("Throughput (Mbps)", color="#888888",
-                            fontsize=8, pad=3, loc="left")
-            ax_tp.tick_params(colors="#555555", labelsize=7)
-            for sp in ax_tp.spines.values(): sp.set_edgecolor("#333333")
- 
-            # Fixed Y axis: 0 to 100 Mbps, gridlines every 20 Mbps
-            ax_tp.set_ylim(0, 100)
-            ax_tp.set_yticks([0, 20, 40, 60, 80, 100])
-            ax_tp.yaxis.set_tick_params(labelsize=7, colors="#555555")
-            ax_tp.set_autoscaley_on(False)
-            ax_tp.grid(axis="y", color="#2e2e2e", linewidth=0.6, linestyle="--")
- 
-            self._mon_line_dl, = ax_tp.plot(
-                [], [], color="#00BCD4", linewidth=1.2, label="DL ↓")
-            self._mon_line_ul, = ax_tp.plot(
-                [], [], color="#FF9800", linewidth=1.2, label="UL ↑")
-            ax_tp.legend(loc="upper right", fontsize=7,
-                         facecolor="#222222", labelcolor="#aaaaaa",
-                         edgecolor="#333333", framealpha=0.7)
-            ax_tp.set_ylabel("Mbps", color="#555555", fontsize=7)
-            ax_tp.yaxis.set_label_coords(-0.10, 0.5)
- 
-            # ── Latency subplot (autoscaling, min 5 ms ceiling) ───────────
-            ax_lat = self._mon_fig.add_subplot(2, 1, 2)
-            ax_lat.set_facecolor("#222222")
-            ax_lat.set_title("Latency (ms)", color="#888888",
-                             fontsize=8, pad=3, loc="left")
-            ax_lat.tick_params(colors="#555555", labelsize=7)
-            for sp in ax_lat.spines.values(): sp.set_edgecolor("#333333")
-            ax_lat.grid(axis="y", color="#2e2e2e", linewidth=0.6, linestyle="--")
-            self._mon_line_lat, = ax_lat.plot(
-                [], [], color="#4caf50", linewidth=1.2, label="RTT")
-            ax_lat.legend(loc="upper right", fontsize=7,
-                          facecolor="#222222", labelcolor="#aaaaaa",
-                          edgecolor="#333333", framealpha=0.7)
-            ax_lat.set_ylabel("ms", color="#555555", fontsize=7)
-            ax_lat.yaxis.set_label_coords(-0.10, 0.5)
- 
-            # Store axes refs for _apply_monitor_payload
-            self._mon_axes = [ax_tp, ax_lat]
- 
-            self._mon_canvas = FigureCanvasTkAgg(
-                self._mon_fig, master=graph_container)
-            self._mon_canvas.get_tk_widget().pack(fill="both", expand=True)
+        path = filedialog.asksaveasfilename(parent=self, defaultextension='.txt',
+            initialfile=f'netversity_scan_{time.strftime("%Y%m%d_%H%M%S")}.txt', filetypes=[('Text file', '*.txt')])
+        if path:
+            try:
+                Path(path).write_text(self._last_raw_output, encoding='utf-8')
+                self._set_status('Scan output exported.')
+            except OSError as exc: self._set_status(str(exc))
+
+    def _heading(self, parent, title, description):
+        frame = ttk.Frame(parent); frame.pack(fill='x', pady=(0, 18))
+        ttk.Label(frame, text=title, style='Title.TLabel').pack(anchor='w')
+        ttk.Label(frame, text=description, style='Muted.TLabel', wraplength=760).pack(anchor='w', pady=(3, 0))
+        return frame
+
+    def _tree(self, parent, columns, widths):
+        frame = ttk.Frame(parent); frame.pack(fill='both', expand=True)
+        tree = ttk.Treeview(frame, columns=columns, show='headings', selectmode='browse')
+        for name, width in zip(columns, widths):
+            tree.heading(name, text=name, command=lambda c=name: self._sort_tree(tree, c))
+            tree.column(name, width=width, minwidth=65, stretch=True)
+        sy = ttk.Scrollbar(frame, command=tree.yview)
+        sx = ttk.Scrollbar(frame, orient='horizontal', command=tree.xview)
+        tree.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+        tree.grid(row=0, column=0, sticky='nsew'); sy.grid(row=0, column=1, sticky='ns'); sx.grid(row=1, column=0, sticky='ew')
+        frame.rowconfigure(0, weight=1); frame.columnconfigure(0, weight=1)
+        return tree
+
+    def _sort_tree(self, tree, column):
+        values = [(tree.set(i, column), i) for i in tree.get_children()]
+        def key(item):
+            try: return (0, float(item[0].rstrip('%')))
+            except ValueError: return (1, item[0].lower())
+        for index, (_, item) in enumerate(sorted(values, key=key)): tree.move(item, '', index)
+
+    def _build_network_ui(self, parent):
+        self._heading(parent, 'Networks', 'Your adapters and nearby Wi-Fi networks')
+        controls = ttk.Frame(parent); controls.pack(fill='x', pady=(0, 14))
+        self.btn_scan = ttk.Button(controls, text='Refresh', command=self._scan_async); self.btn_scan.pack(side='left')
+        ttk.Checkbutton(controls, text='Refresh every 15 seconds', variable=self.auto_scan, command=self._toggle_auto_scan).pack(side='left', padx=16)
+        self.btn_auto = ttk.Button(controls, text='Connect strongest saved', command=self._auto_reconnect_async); self.btn_auto.pack(side='right')
+        split = ttk.Panedwindow(parent, orient='horizontal'); split.pack(fill='both', expand=True)
+        left, right = ttk.Frame(split), ttk.Frame(split, padding=(18, 0, 0))
+        split.add(left, weight=3); split.add(right, weight=2)
+        self.net_tree = self._tree(left, ('Network', 'Type', 'Signal', 'Status'), (180, 70, 70, 115))
+        self.net_tree.bind('<<TreeviewSelect>>', self._select_network)
+        self.detail_title = ttk.Label(right, text='Select a network', style='Heading.TLabel', wraplength=280); self.detail_title.pack(anchor='w', pady=(3, 12))
+        self.detail_text = tk.StringVar(value='Connection details and actions will appear here.')
+        ttk.Label(right, textvariable=self.detail_text, justify='left', wraplength=270).pack(anchor='w', fill='x', pady=(0, 16))
+        self.btn_connect = ttk.Button(right, text='Connect', command=self._connect_async, style='Accent.TButton', state='disabled'); self.btn_connect.pack(fill='x', pady=4)
+        self.btn_disconnect = ttk.Button(right, text='Disconnect', command=self._disconnect_async, state='disabled'); self.btn_disconnect.pack(fill='x', pady=4)
+        ttk.Button(right, text='Adapter settings', command=self._open_adapter_settings).pack(fill='x', pady=4)
+        ttk.Button(right, text='Copy details', command=lambda: self._copy(self.detail_title.cget('text') + '\n' + self.detail_text.get())).pack(fill='x', pady=4)
+        self.network_summary = ttk.Label(parent, text='Scanning…', style='Muted.TLabel'); self.network_summary.pack(fill='x', pady=(12, 0))
+
+    def _network_key(self, net): return net.get('type', 'wifi') + ':' + net['ssid']
+
+    def _populate_cards(self, nets):
+        selected = self._network_key(self.selected_net) if self.selected_net else None
+        self.networks = {self._network_key(n): n for n in nets}
+        pos = self.net_tree.yview()[0]
+        self.net_tree.delete(*self.net_tree.get_children())
+        for key, n in self.networks.items():
+            wired = n.get('type') == 'wired'
+            connected = n.get('state') == 'Connected' if wired else n['ssid'] == self.wlan_snapshot.get('SSID')
+            state = 'Connected' if connected else 'Disabled' if wired and n.get('admin_state') == 'Disabled' else 'Disconnected' if wired else 'Saved' if n['ssid'] in self.saved_profiles else 'Available'
+            self.net_tree.insert('', 'end', iid=key, values=(n['ssid'], 'Ethernet' if wired else 'Wi-Fi', '—' if wired else f"{n.get('signal', 0)}%", state))
+        if selected in self.networks:
+            self.net_tree.selection_set(selected); self.selected_net = self.networks[selected]
         else:
-            ttk.Label(graph_container,
-                      text="Graph requires matplotlib.\npip install matplotlib",
-                      foreground="#FF5722").pack(padx=10, pady=20)
-            self._mon_fig    = None
-            self._mon_canvas = None
-            self._mon_axes   = None
- 
-    # ---- Monitor engine start / stop ----
- 
-    def _start_monitor(self):
-        if self._monitor_engine and self._monitor_engine.is_alive():
-            return
-        try:
-            interval = max(1, int(self.mon_interval_var.get()))
-        except ValueError:
-            interval = 1
-            self.mon_interval_var.set("1")
- 
-        self._graph_times.clear()
-        self._graph_dl.clear()
-        self._graph_ul.clear()
-        self._graph_lat.clear()
- 
-        while not self.monitor_queue.empty():
-            try: self.monitor_queue.get_nowait()
+            self.selected_net = None
+            if nets:
+                key = next((k for k, n in self.networks.items() if n['ssid'] == self.wlan_snapshot.get('SSID')), next(iter(self.networks)))
+                self.net_tree.selection_set(key); self.selected_net = self.networks[key]
+        self.net_tree.yview_moveto(pos)
+        self._update_details()
+        self.network_summary.config(text=f'{len(nets)} adapters / networks · Updated {time.strftime("%H:%M:%S")}' if nets else 'No networks found. Check that an adapter is enabled, then refresh.')
+
+    def _select_network(self, event=None):
+        selection = self.net_tree.selection()
+        self.selected_net = self.networks.get(selection[0]) if selection else None
+        self._update_details()
+
+    def _update_details(self):
+        n = self.selected_net
+        if not n:
+            self.detail_title.config(text='Select a network'); self.detail_text.set('No network selected.')
+            self.btn_connect.config(state='disabled'); self.btn_disconnect.config(state='disabled'); return
+        wired = n.get('type') == 'wired'
+        connected = n.get('state') == 'Connected' if wired else n['ssid'] == self.wlan_snapshot.get('SSID')
+        self.detail_title.config(text=n['ssid'])
+        parts = [('Type', 'Ethernet adapter' if wired else 'Wi-Fi network'), ('Status', n.get('state', 'Unknown') if wired else 'Connected' if connected else 'Available')]
+        if not wired: parts.extend([('Signal', f"{n.get('signal', 0)}%"), ('Security', n.get('auth', 'Unknown')), ('Profile', 'Saved' if n['ssid'] in self.saved_profiles else 'Not saved')])
+        if (wired and n['ssid'] == self.current_alias) or (not wired and connected and self.current_alias == self.adapter_snapshot.get('wifi_alias')):
+            info = self.adapter_snapshot
+            parts.extend([('IPv4', info.get('IPv4') or 'Unavailable'), ('Gateway', info.get('Gateway') or 'Unavailable'), ('DNS', info.get('DNS1') or 'Unavailable'), ('Addressing', 'DHCP' if info.get('DHCP') else 'Manual')])
+        self.detail_text.set('\n\n'.join(f'{key}  ·  {value}' for key, value in parts))
+        self.btn_connect.config(text='Enable adapter' if wired else 'Connect', state='disabled' if self._network_busy or (wired and n.get('admin_state') == 'Enabled') or (not wired and connected) else 'normal')
+        self.btn_disconnect.config(text='Disable adapter' if wired else 'Disconnect', state='normal' if not self._network_busy and (wired and n.get('admin_state') != 'Disabled' or not wired and connected) else 'disabled')
+
+    def _copy(self, text):
+        self.clipboard_clear(); self.clipboard_append(text); self._set_status('Copied to clipboard.')
+
+    def _set_busy(self, busy):
+        self._network_busy = busy
+        for button in (self.btn_scan, self.btn_auto): button.config(state='disabled' if busy else 'normal')
+        self._update_details()
+
+    def _scan_async(self):
+        if self._network_busy or self._shutting_down.is_set(): return
+        self._set_busy(True); self._set_status('Refreshing networks…')
+        def work():
+            try:
+                wired = get_wired_interfaces()
+                try: wifi = aggressive_scan_native(3.0)
+                except Exception: wifi = scan_burst(2, 1.0)
+                return wired + wifi, set(list_saved_profiles()), current_status(), None
+            except Exception as exc: return [], set(), {}, str(exc)
+        def done(result):
+            nets, self.saved_profiles, self.wlan_snapshot, error = result
+            self._populate_cards(nets); self._set_busy(False)
+            self._set_status('Scan failed: ' + error if error else 'Network list updated.')
+        self._job(work, done)
+
+    def _toggle_auto_scan(self):
+        if self._auto_after:
+            self.after_cancel(self._auto_after); self._auto_after = None
+        if self.auto_scan.get(): self._auto_after = self.after(self.scan_interval_ms, self._auto_scan_tick)
+
+    def _auto_scan_tick(self):
+        self._auto_after = None
+        if self.auto_scan.get() and not self._shutting_down.is_set():
+            self._scan_async(); self._auto_after = self.after(self.scan_interval_ms, self._auto_scan_tick)
+
+    def _connect_async(self):
+        if not self.selected_net or self._network_busy: return
+        n = dict(self.selected_net); wired = n.get('type') == 'wired'; password = None
+        if wired and not is_admin():
+            messagebox.showinfo('Administrator required', 'Restart Netversity as administrator to enable this adapter.', parent=self); return
+        if not wired and n['ssid'] not in self.saved_profiles:
+            if is_open_auth(n.get('auth', '')):
+                if not messagebox.askyesno('Open Wi-Fi', f"Connect to {n['ssid']} without wireless encryption?", parent=self): return
+            else:
+                password = simpledialog.askstring('Connect to Wi-Fi', f"Password for {n['ssid']}:", show='*', parent=self)
+                if password is None: return
+        self._set_busy(True); self._set_status('Enabling adapter…' if wired else f"Connecting to {n['ssid']}…")
+        def work():
+            try:
+                if wired: return set_interface_state(n['ssid'], True), 'Adapter enabled.'
+                ok = self._connect_wifi(n, password)
+                if not ok: return False, 'Connection request failed. Check the profile or password.'
+                for _ in range(15):
+                    if self._shutting_down.wait(1): return False, 'Cancelled.'
+                    status = current_status()
+                    if status.get('SSID') == n['ssid'] and status.get('State', '').lower() == 'connected':
+                        return True, f"Connected to {n['ssid']}."
+                return False, 'Connection was requested, but association was not confirmed. Refresh or check Windows Wi-Fi settings.'
+            except Exception as exc: return False, str(exc)
+        self._job(work, self._connection_done)
+
+    def _connect_wifi(self, n, password):
+        ssid = n['ssid']
+        if ssid in self.saved_profiles: return connect_with_existing_profile(ssid)
+        auth = n.get('auth', '').lower()
+        if not is_open_auth(auth) and ('enterprise' in auth or '802.1x' in auth or 'wpa3' in auth):
+            raise ValueError('Create this enterprise/WPA3 profile in Windows Wi-Fi settings first, then connect using the saved profile.')
+        security = '<authEncryption><authentication>open</authentication><encryption>none</encryption><useOneX>false</useOneX></authEncryption>' if is_open_auth(auth) else '<authEncryption><authentication>WPA2PSK</authentication><encryption>AES</encryption><useOneX>false</useOneX></authEncryption><sharedKey><keyType>passPhrase</keyType><protected>false</protected><keyMaterial>' + xml_escape(password or '') + '</keyMaterial></sharedKey>'
+        xml = '<?xml version="1.0"?><WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1"><name>' + xml_escape(ssid) + '</name><SSIDConfig><SSID><name>' + xml_escape(ssid) + '</name></SSID></SSIDConfig><connectionType>ESS</connectionType><connectionMode>manual</connectionMode><MSM><security>' + security + '</security></MSM></WLANProfile>'
+        with tempfile.TemporaryDirectory(prefix='netversity-wifi-') as temp:
+            path = Path(temp) / 'profile.xml'; path.write_text(xml, encoding='utf-8')
+            code, out, err = process_args(['netsh', 'wlan', 'add', 'profile', f'filename={path}', 'user=current'])
+            if code: raise ValueError(err or out or 'Windows rejected this Wi-Fi profile.')
+        return connect_with_existing_profile(ssid)
+
+    def _connection_done(self, result):
+        self._set_busy(False); self._set_status(result[1] if result[0] else 'Connection operation failed: ' + result[1])
+        self.after(2500, self._scan_async)
+
+    def _disconnect_async(self):
+        if not self.selected_net or self._network_busy: return
+        n = dict(self.selected_net); wired = n.get('type') == 'wired'
+        if wired and not is_admin():
+            messagebox.showinfo('Administrator required', 'Restart Netversity as administrator to disable this adapter.', parent=self); return
+        self._set_busy(True)
+        def work():
+            try:
+                ok = set_interface_state(n['ssid'], False) if wired else disconnect()
+                return ok, ('Adapter disabled.' if wired else 'Disconnect request accepted.') if ok else 'Windows rejected the request.'
+            except Exception as exc: return False, str(exc)
+        self._job(work, self._connection_done)
+
+    def _auto_reconnect_async(self):
+        choices = [n for n in self.networks.values() if n.get('type') == 'wifi' and n['ssid'] in self.saved_profiles]
+        if not choices: self._set_status('No saved Wi-Fi network is currently available. Refresh and try again.'); return
+        self.net_tree.selection_set(self._network_key(max(choices, key=lambda n: n.get('signal', 0))))
+        self._select_network(); self._connect_async()
+
+    def _open_adapter_settings(self):
+        n = self.selected_net
+        alias = n['ssid'] if n and n.get('type') == 'wired' else self.adapter_snapshot.get('wifi_alias') if n else self.current_alias
+        if not alias: self._set_status('No matching adapter is available yet. Wait for connection details or refresh.'); return
+        AdapterSettingsDialog(self, alias)
+
+    def _background_status_updater(self):
+        while not self._shutting_down.is_set():
+            try:
+                alias = get_active_interface_alias(); info = get_adapter_info(alias); wlan = current_status()
+                info['wifi_alias'] = wifi_interface_alias()
+                self.status_queue.put((alias, info, wlan))
+            except Exception: pass
+            self._shutting_down.wait(4)
+
+    def _monitor_queues(self):
+        if self._shutting_down.is_set(): return
+        for _ in range(300):
+            try: callback = self.ui_queue.get_nowait()
             except queue.Empty: break
- 
-        self._monitor_engine = MonitorEngine(interval=interval,
-                                             out_q=self.monitor_queue)
-        self._monitor_engine.start()
- 
-        self.btn_mon_start.config(state="disabled")
-        self.btn_mon_stop.config(state="normal")
-        self.mon_status_lbl.config(text="● Running", foreground="#4caf50")
- 
+            try: callback()
+            except tk.TclError: pass  # Closed dialogs may have queued completion callbacks.
+            except Exception as exc: self._set_status(f'UI update failed: {exc}')
+        while not self.status_queue.empty():
+            alias, info, wlan = self.status_queue.get_nowait()
+            self.current_alias, self.adapter_snapshot, self.wlan_snapshot = alias, info, wlan
+            if not getattr(self, '_targets_initialized', False) and info.get('IPv4') and info.get('Mask'):
+                subnet = str(ipaddress.IPv4Network(f"{info['IPv4']}/{info['Mask']}", strict=False))
+                if not self.device_target.get(): self.device_target.insert(0, subnet)
+                if not self.v_target.get(): self.v_target.insert(0, subnet)
+                if not self.ping_pane._target_var.get(): self.ping_pane._target_var.set(info.get('Gateway') or '')
+                self._targets_initialized = True
+            name = wlan.get('SSID') if alias == info.get('wifi_alias') else alias
+            self.context.set(f"{name or 'No active connection'}   ·   {info.get('IPv4') or 'No IPv4 address'}   ·   {alias or 'No default route'}   ·   Updated {time.strftime('%H:%M:%S')}")
+            self._update_details()
+        while not self.monitor_queue.empty(): self._apply_monitor_payload(self.monitor_queue.get_nowait())
+        while not self.device_queue.empty(): self._apply_devices(self.device_queue.get_nowait())
+        self.after(100, self._monitor_queues)
+
+    def _build_vuln_ui(self, parent):
+        self._heading(parent, 'Security scans', 'Inspect services, compare scan methods, and review the evidence')
+        config = ttk.Frame(parent); config.pack(fill='x')
+        config.columnconfigure(0, weight=2); config.columnconfigure(1, weight=1)
+        ttk.Label(config, text='Targets · IP, hostname or subnet').grid(row=0, column=0, sticky='w')
+        ttk.Label(config, text='Scan preset').grid(row=0, column=1, sticky='w', padx=(12, 0))
+        self.v_target = ttk.Entry(config); self.v_target.grid(row=1, column=0, sticky='ew', pady=6)
+        self.v_preset = tk.StringVar(value='Fast Scan (-T4)')
+        preset = ttk.Combobox(config, textvariable=self.v_preset, values=list(NMAP_PRESETS), state='readonly')
+        preset.grid(row=1, column=1, sticky='ew', padx=(12, 0)); preset.bind('<<ComboboxSelected>>', lambda e: self._on_preset_change())
+        advanced = ttk.Frame(parent); advanced.pack(fill='x', pady=6)
+        ttk.Label(advanced, text='Extra flags').pack(side='left')
+        self.v_extra = ttk.Entry(advanced); self.v_extra.pack(side='left', fill='x', expand=True, padx=10)
+        ttk.Button(advanced, text='Flags reference', command=self._open_nmap_help).pack(side='right')
+        compare = ttk.Frame(parent); compare.pack(fill='x', pady=6)
+        self.scan_mode = tk.StringVar(value='Single scan')
+        ttk.Combobox(compare, textvariable=self.scan_mode, values=['Single scan', 'Compare methods'], state='readonly', width=18).pack(side='left')
+        for title, var in [('SYN', self.comp_syn), ('UDP', self.comp_udp), ('ARP discovery', self.comp_arp)]:
+            ttk.Checkbutton(compare, text=title, variable=var).pack(side='left', padx=10)
+        buttons = ttk.Frame(parent); buttons.pack(fill='x', pady=(8, 12))
+        self.v_start_btn = ttk.Button(buttons, text='Start scan', command=self._start_nmap_scan, style='Accent.TButton'); self.v_start_btn.pack(side='left')
+        self.v_stop_btn = ttk.Button(buttons, text='Stop', command=self._stop_nmap_scan, state='disabled'); self.v_stop_btn.pack(side='left', padx=8)
+        self.v_save_btn = ttk.Button(buttons, text='Export TXT', command=self._save_nmap_output, state='disabled'); self.v_save_btn.pack(side='left')
+        ttk.Button(buttons, text='Export CSV', command=self._export_scan_csv).pack(side='left', padx=8)
+        self.scan_state = ttk.Label(buttons, text='Ready' if nmap_installed() else 'Nmap not installed', style='Muted.TLabel'); self.scan_state.pack(side='right')
+        self.scan_notebook = ttk.Notebook(parent); self.scan_notebook.pack(fill='both', expand=True)
+        result, raw, runs = (ttk.Frame(self.scan_notebook, padding=8) for _ in range(3))
+        for frame, name in ((result, 'Results'), (raw, 'Raw output'), (runs, 'Comparison / run details')): self.scan_notebook.add(frame, text=name)
+        self.result_tree = self._tree(result, ('Host', 'Port', 'State', 'Service', 'Review'), (130, 85, 110, 130, 90))
+        self.result_tree.bind('<<TreeviewSelect>>', self._scan_detail)
+        self.scan_detail = tk.StringVar(value='Service review priorities are heuristics, not verified vulnerabilities.')
+        ttk.Label(result, textvariable=self.scan_detail, wraplength=730, style='Muted.TLabel').pack(fill='x', pady=8)
+        self.v_output = scrolledtext.ScrolledText(raw, bg=PANEL, fg=TEXT, font=('Consolas', 10), wrap='word', state='disabled', relief='flat'); self.v_output.pack(fill='both', expand=True)
+        self.run_output = scrolledtext.ScrolledText(runs, bg=PANEL, fg=TEXT, font=('Consolas', 10), wrap='word', state='disabled', relief='flat'); self.run_output.pack(fill='both', expand=True)
+
+    def _on_preset_change(self):
+        if self.v_preset.get() == 'Custom': self.v_extra.focus_set()
+
+    def _append_vout(self, text):
+        self._last_raw_output += text
+        self.v_output.config(state='normal'); self.v_output.insert('end', text); self.v_output.see('end')
+        if int(self.v_output.index('end-1c').split('.')[0]) > 6000: self.v_output.delete('1.0', '1000.0')
+        self.v_output.config(state='disabled')
+
+    def _start_nmap_scan(self):
+        if self._scan_session and self._scan_session.is_alive(): return
+        try:
+            targets = shlex.split(self.v_target.get().strip())
+            if not targets or any(t.startswith('-') for t in targets): raise ValueError('Enter valid target addresses or hostnames, without command flags.')
+            extra = shlex.split(self.v_extra.get().strip())
+            if any(a.startswith(('-oX', '-oA', '--resume')) for a in extra): raise ValueError('XML output and resume options are managed by Netversity. Use the export buttons.')
+            if self.scan_mode.get() == 'Compare methods':
+                plans = [(label, flags) for label, flags, enabled in [('SYN', ['-sS', '-T4'], self.comp_syn.get()), ('UDP', ['-sU', '-T4'], self.comp_udp.get()), ('ARP', ['-sn', '-PR'], self.comp_arp.get())] if enabled]
+                if not plans: raise ValueError('Select at least one comparison method.')
+                if not is_admin(): raise ValueError('Comparison methods require administrator rights.')
+            else: plans = [('Single scan', shlex.split(NMAP_PRESETS.get(self.v_preset.get(), '')) + extra)]
+        except ValueError as exc:
+            self._set_status(str(exc)); return
+        if not nmap_installed(): self._set_status('Install Nmap to use Security scans. Other tools remain available.'); return
+        self._last_raw_output = ''; self._scan_rows = []
+        self.result_tree.delete(*self.result_tree.get_children())
+        for text in (self.v_output, self.run_output): text.config(state='normal'); text.delete('1.0', 'end'); text.config(state='disabled')
+        self.v_start_btn.config(state='disabled'); self.v_stop_btn.config(state='normal'); self.v_save_btn.config(state='disabled')
+        self.scan_state.config(text='Running…')
+        session = ScanSession(targets, plans, lambda kind, data: self._post(self._scan_event, session, kind, data))
+        self._scan_session = session; session.start()
+
+    def _scan_event(self, session, kind, data):
+        if session is not self._scan_session: return
+        if kind == 'line': self._append_vout(data); return
+        state, rows, hosts, failures = data
+        self._scan_rows = rows
+        for index, row in enumerate(rows): self.result_tree.insert('', 'end', iid=str(index), values=row[:5])
+        summary = f'{state}\n{len(set(ip for _, ip, status in hosts if status == "up"))} hosts up; {len(rows)} port observations.\n\n'
+        summary += '\n'.join(f'{label}: {ip} — {status}' for label, ip, status in hosts)
+        summary += '\n\n' + '\n'.join(failures)
+        self.run_output.config(state='normal'); self.run_output.insert('end', summary); self.run_output.config(state='disabled')
+        self._append_vout('\n' + summary + '\n')
+        self.scan_state.config(text=state); self.v_start_btn.config(state='normal'); self.v_stop_btn.config(state='disabled'); self.v_save_btn.config(state='normal')
+        self._set_status(f'Scan {state.lower()}. Partial results are retained where available.')
+
+    def _scan_detail(self, event=None):
+        ids = self.result_tree.selection()
+        if ids:
+            row = self._scan_rows[int(ids[0])]
+            text = row[5] or 'No version reported.'
+            if row[6]: text += '\n' + row[6]
+            self.scan_detail.set(text[:700] + '\nReview priority describes exposure, not a confirmed vulnerability.')
+
+    def _stop_nmap_scan(self):
+        if self._scan_session:
+            self.scan_state.config(text='Stopping…'); self.v_stop_btn.config(state='disabled'); self._scan_session.stop()
+
+    def _export_scan_csv(self):
+        if not self._scan_rows: self._set_status('There are no structured results to export.'); return
+        path = filedialog.asksaveasfilename(parent=self, defaultextension='.csv', initialfile='netversity_scan.csv', filetypes=[('CSV', '*.csv')])
+        if path:
+            try:
+                with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                    writer = csv.writer(f); writer.writerow(['Host', 'Port', 'State', 'Service', 'Review priority', 'Version', 'Evidence']); writer.writerows(self._scan_rows)
+                self._set_status('Scan results exported.')
+            except OSError as exc: self._set_status(str(exc))
+
+    def _build_topology_ui(self, parent):
+        self._heading(parent, 'Devices', 'Discover hosts and review changes against a saved network baseline')
+        row = ttk.Frame(parent); row.pack(fill='x', pady=(0, 12))
+        self.device_target = ttk.Entry(row, width=22); self.device_target.pack(side='left')
+        self.device_start = ttk.Button(row, text='Start discovery', command=self._start_devices, style='Accent.TButton'); self.device_start.pack(side='left', padx=8)
+        ttk.Button(row, text='Stop', command=self._stop_devices).pack(side='left')
+        ttk.Button(row, text='Save baseline', command=self._save_device_baseline).pack(side='left', padx=8)
+        ttk.Button(row, text='Alert log', command=self._device_alert_log).pack(side='left')
+        self.device_state = ttk.Label(parent, text='Choose a local subnet, then start discovery. Maximum 4,096 addresses.', style='Muted.TLabel'); self.device_state.pack(fill='x', pady=(0, 12))
+        notebook = ttk.Notebook(parent); notebook.pack(fill='both', expand=True)
+        table, graph = ttk.Frame(notebook, padding=8), ttk.Frame(notebook, padding=8)
+        notebook.add(table, text='Device list'); notebook.add(graph, text='Network map')
+        self.device_tree = self._tree(table, ('Address', 'Name', 'MAC', 'Vendor estimate', 'OS estimate', 'Review'), (115, 145, 150, 120, 115, 125))
+        actions = ttk.Frame(table); actions.pack(fill='x', pady=(12, 0))
+        ttk.Button(actions, text='Ping selected', command=self._ping_device).pack(side='left')
+        ttk.Button(actions, text='Scan selected', command=self._scan_device).pack(side='left', padx=8)
+        ttk.Button(actions, text='Copy selected', command=self._copy_device).pack(side='left')
+        ttk.Label(graph, text='Inferred gateway relationships · Not a physical wiring map', style='Muted.TLabel').pack(anchor='w', pady=(0, 8))
+        self.device_fig = self.device_canvas = None
+        if mpl_figure and FigureCanvasTkAgg and nx:
+            self.device_fig = mpl_figure.Figure(facecolor=PANEL)
+            self.device_ax = self.device_fig.add_subplot(111); self.device_ax.set_facecolor(PANEL); self.device_ax.axis('off')
+            self.device_canvas = FigureCanvasTkAgg(self.device_fig, graph); self.device_canvas.get_tk_widget().pack(fill='both', expand=True)
+        else: ttk.Label(graph, text='Install matplotlib and networkx to enable the optional map.').pack(pady=20)
+
+    def _start_devices(self):
+        if self.device_engine and self.device_engine.is_alive():
+            if self.device_engine._stop_evt.is_set(): self._set_status('Discovery is still stopping.'); return
+            self.device_engine.refresh_now(); self.device_state.config(text='Refresh requested…'); return
+        try:
+            network = ipaddress.IPv4Network(self.device_target.get().strip(), strict=False)
+            if network.num_addresses > 4096: raise ValueError('Use a subnet containing at most 4,096 addresses.')
+        except ValueError as exc: self._set_status(str(exc)); return
+        self.baseline_file = DATA_DIR / ('baseline_' + str(network).replace('/', '_') + '.json')
+        try: self.baseline = json.loads(self.baseline_file.read_text()) if self.baseline_file.exists() else {}
+        except (OSError, ValueError): self.baseline = {}
+        self._alerted_ips.clear()
+        while not self.device_queue.empty(): self.device_queue.get_nowait()
+        gateway = self.adapter_snapshot.get('Gateway')
+        self.device_engine = TopoEngine(str(network), gateway, self.baseline, interval=30, out_q=self.device_queue)
+        self.device_engine.start(); self.device_start.config(text='Refresh now'); self.device_target.config(state='disabled')
+        self.device_state.config(text=f'Discovering {network}… Updates every 30 seconds after each sweep.')
+
+    def _stop_devices(self):
+        if self.device_engine:
+            self.device_engine.stop(); self.device_state.config(text='Stopping discovery…'); self.after(200, self._devices_stopped)
+
+    def _devices_stopped(self):
+        if self.device_engine and self.device_engine.is_alive(): self.after(200, self._devices_stopped); return
+        self.device_engine = None; self.device_start.config(text='Start discovery'); self.device_target.config(state='normal')
+        self.device_state.config(text='Discovery stopped. Last results retained.')
+
+    def _apply_devices(self, payload):
+        self.device_nodes = payload.get('nodes', [])
+        selected = self.device_tree.selection()
+        self.device_tree.delete(*self.device_tree.get_children())
+        for n in self.device_nodes:
+            self.device_tree.insert('', 'end', iid=n['ip'], values=(n['ip'], n.get('name') or 'Unnamed', n.get('mac'), n.get('vendor'), n.get('os') or 'Unknown', n.get('status')))
+            if n['status'] in ('Newly observed', 'Address changed') and n['ip'] not in self._alerted_ips:
+                with (DATA_DIR / 'security_alerts.log').open('a', encoding='utf-8') as f: f.write(f"{datetime.now().isoformat()} {n['ip']} {n['status']} {n.get('mac')}\n")
+        self._alerted_ips = {n['ip'] for n in self.device_nodes if n['status'] in ('Newly observed', 'Address changed')}
+        if selected and self.device_tree.exists(selected[0]): self.device_tree.selection_set(selected[0])
+        self.device_state.config(text=f"{len(self.device_nodes)} observations · {len(self._alerted_ips)} changes to review · Updated {time.strftime('%H:%M:%S')}")
+        if self.device_canvas:
+            graph = nx.Graph(); gateway = payload.get('gateway')
+            if gateway: graph.add_node(gateway)
+            for n in self.device_nodes:
+                graph.add_node(n['ip'])
+                if gateway and gateway != n['ip']: graph.add_edge(gateway, n['ip'])
+            self.device_ax.clear(); self.device_ax.axis('off')
+            if len(graph) <= 100 and len(graph):
+                positions = nx.spring_layout(graph, seed=42)
+                nx.draw_networkx(graph, positions, ax=self.device_ax, node_color='#365f93', edge_color=LINE,
+                                 font_color=TEXT, font_size=9, node_size=650, labels={ip:ip for ip in graph})
+            elif len(graph) > 100: self.device_ax.text(.5, .5, 'Use the device list for networks with more than 100 hosts.', ha='center', color=TEXT)
+            self.device_fig.tight_layout(); self.device_canvas.draw_idle()
+
+    def _save_device_baseline(self):
+        if not self.device_nodes or not self.baseline_file: self._set_status('Run discovery before saving a baseline.'); return
+        if not messagebox.askyesno('Replace baseline', 'Use the currently responding devices as the baseline for this subnet?', parent=self): return
+        self.baseline = {n['ip']: n.get('mac', 'Unknown') for n in self.device_nodes if n['status'] != 'Missing'}
+        try:
+            self.baseline_file.write_text(json.dumps(self.baseline, indent=2))
+            if self.device_engine: self.device_engine.update_baseline(self.baseline); self.device_engine.refresh_now()
+            self._set_status('Baseline saved for this subnet.')
+        except OSError as exc: self._set_status(str(exc))
+
+    def _device_alert_log(self):
+        path = DATA_DIR / 'security_alerts.log'
+        HelpWindow(self, title='Device observation log', text=path.read_text(encoding='utf-8') if path.exists() else 'No changes logged yet.')
+
+    def _selected_device(self):
+        ids = self.device_tree.selection()
+        if not ids: self._set_status('Select a device first.'); return None
+        return ids[0]
+
+    def _ping_device(self):
+        ip = self._selected_device()
+        if ip:
+            if self.ping_pane._thread and self.ping_pane._thread.is_alive(): self._set_status('Stop the current ping session before choosing a new target.'); return
+            self.ping_pane._target_var.set(ip); self._show_page('Diagnostics'); self.diag_notebook.select(self.ping_pane)
+
+    def _scan_device(self):
+        ip = self._selected_device()
+        if ip: self.v_target.delete(0, 'end'); self.v_target.insert(0, ip); self._show_page('Security scans')
+
+    def _copy_device(self):
+        ip = self._selected_device()
+        if ip: self._copy(' | '.join(map(str, self.device_tree.item(ip, 'values'))))
+
+    def _build_http_ui(self, parent):
+        self._heading(parent, 'File sharing', 'Share a selected folder over HTTP')
+        config = ttk.Frame(parent); config.pack(fill='x')
+        ttk.Label(config, text='Shared folder').pack(anchor='w')
+        folder = ttk.Frame(config); folder.pack(fill='x', pady=(6, 12))
+        self.http_path_var = tk.StringVar(value='Choose a folder to share')
+        ttk.Entry(folder, textvariable=self.http_path_var, state='readonly').pack(side='left', fill='x', expand=True)
+        self.folder_button = ttk.Button(folder, text='Choose folder', command=self._select_http_folder); self.folder_button.pack(side='left', padx=(10, 0))
+        row = ttk.Frame(config); row.pack(fill='x')
+        ttk.Label(row, text='Port').pack(side='left')
+        self.http_port_var = tk.StringVar(value='8000')
+        self.port_entry = ttk.Entry(row, textvariable=self.http_port_var, width=8); self.port_entry.pack(side='left', padx=10)
+        self.btn_http_start = ttk.Button(row, text='Start sharing', command=self._start_http_server, style='Accent.TButton'); self.btn_http_start.pack(side='left', padx=8)
+        self.btn_http_stop = ttk.Button(row, text='Stop', command=self._stop_http_server, state='disabled'); self.btn_http_stop.pack(side='left')
+        self.http_state = ttk.Label(row, text='Stopped', foreground=MUTED); self.http_state.pack(side='right')
+        ttk.Label(config, text='Access: all local interfaces · No sign-in · Unencrypted HTTP', style='Muted.TLabel').pack(anchor='w', pady=12)
+        self.http_url = tk.StringVar(value='Address appears after the server starts')
+        link = ttk.Frame(parent); link.pack(fill='x', pady=(0, 12))
+        ttk.Entry(link, textvariable=self.http_url, state='readonly').pack(side='left', fill='x', expand=True)
+        ttk.Button(link, text='Copy address', command=lambda: self._copy(self.http_url.get()) if self.http_state.cget('text') == 'Running' else self._set_status('Start sharing to obtain an address.')).pack(side='left', padx=(10, 0))
+        self.http_log_area = scrolledtext.ScrolledText(parent, bg=PANEL, fg=TEXT, font=('Consolas', 10), state='disabled', relief='flat', wrap='word')
+        self.http_log_area.pack(fill='both', expand=True)
+
+    def _log_http_msg(self, message):
+        def append():
+            self.http_log_area.config(state='normal'); self.http_log_area.insert('end', message); self.http_log_area.see('end')
+            if int(self.http_log_area.index('end-1c').split('.')[0]) > 3000: self.http_log_area.delete('1.0', '1000.0')
+            self.http_log_area.config(state='disabled')
+        self._post(append)
+
+    def _start_http_server(self):
+        if self.http_thread and self.http_thread.is_alive(): return
+        try:
+            port = int(self.http_port_var.get())
+            if not 1 <= port <= 65535: raise ValueError('Port must be between 1 and 65535.')
+            if not self.server_dir or not os.path.isdir(self.server_dir): raise ValueError('Choose an existing folder first.')
+        except ValueError as exc: self._set_status(str(exc)); return
+        self.http_state.config(text='Starting…'); self.btn_http_start.config(state='disabled'); self.folder_button.config(state='disabled'); self.port_entry.config(state='disabled')
+        server = SharingServer(port, self.server_dir, lambda state, error: self._post(self._server_event, server, state, error), self._log_http_msg)
+        self.http_thread = server; server.start()
+
+    def _server_event(self, server, state, error):
+        if server is not self.http_thread: return
+        self.http_state.config(text=state, foreground=GOOD if state == 'Running' else BAD if state == 'Failed' else MUTED)
+        active = state == 'Running'
+        self.btn_http_start.config(state='disabled' if active else 'normal'); self.btn_http_stop.config(state='normal' if active else 'disabled')
+        self.folder_button.config(state='disabled' if active else 'normal'); self.port_entry.config(state='disabled' if active else 'normal')
+        if active:
+            ip = self.adapter_snapshot.get('IPv4') or '127.0.0.1'; self.http_url.set(f'http://{ip}:{server.port}')
+        else: self.http_url.set('Server is not running')
+        self._log_http_msg(f'{time.strftime("%H:%M:%S")} {state}: {error or server.directory}\n')
+        if error: self._set_status('Sharing failed: ' + error)
+
+    def _stop_http_server(self):
+        if self.http_thread:
+            self.http_thread.stop(); self.http_state.config(text='Stopping…'); self.btn_http_stop.config(state='disabled')
+
+    def _build_monitor_ui(self, parent):
+        self._heading(parent, 'Diagnostics', 'Measure gateway reachability, interface traffic and individual targets')
+        self.diag_notebook = ttk.Notebook(parent); self.diag_notebook.pack(fill='both', expand=True)
+        monitor = ttk.Frame(self.diag_notebook, padding=12)
+        self.ping_pane = PingPane(self.diag_notebook)
+        logs = ttk.Frame(self.diag_notebook, padding=18)
+        self.diag_notebook.add(monitor, text='Live monitor'); self.diag_notebook.add(self.ping_pane, text='Ping'); self.diag_notebook.add(logs, text='Logging')
+        ctrl = ttk.Frame(monitor); ctrl.pack(fill='x', pady=(0, 14))
+        self.btn_mon_start = ttk.Button(ctrl, text='Start monitor', command=self._start_monitor, style='Accent.TButton'); self.btn_mon_start.pack(side='left')
+        self.btn_mon_stop = ttk.Button(ctrl, text='Stop', command=self._stop_monitor, state='disabled'); self.btn_mon_stop.pack(side='left', padx=8)
+        ttk.Label(ctrl, text='Interval (s)').pack(side='left', padx=(10, 0))
+        self.mon_interval_var = tk.StringVar(value='1')
+        self.interval_entry = ttk.Entry(ctrl, textvariable=self.mon_interval_var, width=5); self.interval_entry.pack(side='left', padx=8)
+        self.mon_status_lbl = ttk.Label(ctrl, text='Idle', style='Muted.TLabel'); self.mon_status_lbl.pack(side='right')
+        metrics = ttk.Frame(monitor); metrics.pack(fill='x', pady=(0, 12))
+        for index, (name, attr) in enumerate([('Gateway latency', '_mon_lbl_lat'), ('Variation (last 10 replies)', '_mon_lbl_jit'), ('Loss (last 20 probes)', '_mon_lbl_loss')]):
+            tile = ttk.Frame(metrics, padding=12, style='Panel.TFrame'); tile.grid(row=0, column=index, sticky='nsew', padx=(0, 8))
+            metrics.columnconfigure(index, weight=1)
+            tk.Label(tile, text=name, bg=PANEL, fg=MUTED, anchor='w', font=('Segoe UI', 9)).pack(fill='x')
+            label = tk.Label(tile, text='—', bg=PANEL, fg=TEXT, anchor='w', font=('Segoe UI', 20, 'bold')); label.pack(fill='x', pady=(5, 0)); setattr(self, attr, label)
+        self.mon_context = tk.StringVar(value='No measurements yet. Throughput is adapter traffic, not an Internet speed test.')
+        ttk.Label(monitor, textvariable=self.mon_context, style='Muted.TLabel', wraplength=720).pack(fill='x', pady=(0, 8))
+        self._mon_fig = self._mon_canvas = self._mon_axes = None
+        if mpl_figure and FigureCanvasTkAgg:
+            self._mon_fig = mpl_figure.Figure(facecolor=BG, figsize=(7, 4))
+            ax_tp, ax_lat = self._mon_fig.subplots(2, 1)
+            for ax, ylabel in ((ax_tp, 'Mbps'), (ax_lat, 'ms')):
+                ax.set_facecolor(PANEL); ax.tick_params(colors=MUTED, labelsize=9)
+                ax.set_ylabel(ylabel, color=MUTED); ax.grid(color=LINE, alpha=.5)
+                for spine in ax.spines.values(): spine.set_color(LINE)
+            self._mon_line_dl, = ax_tp.plot([], [], color=ACCENT, label='Received')
+            self._mon_line_ul, = ax_tp.plot([], [], color=WARN, label='Sent')
+            ax_tp.legend(facecolor=PANEL, labelcolor=TEXT, edgecolor=LINE, loc='upper right', fontsize=9)
+            self._mon_line_lat, = ax_lat.plot([], [], color=GOOD)
+            ax_lat.set_xlabel('Seconds from first visible sample', color=MUTED)
+            self._mon_axes = [ax_tp, ax_lat]
+            self._mon_fig.tight_layout(pad=1.3)
+            self._mon_canvas = FigureCanvasTkAgg(self._mon_fig, monitor); self._mon_canvas.get_tk_widget().pack(fill='both', expand=True)
+        else: ttk.Label(monitor, text='Install matplotlib to enable charts. Numeric measurements remain available.').pack(pady=20)
+        ttk.Label(logs, text='Signal and gateway latency', style='Heading.TLabel').pack(anchor='w')
+        ttk.Label(logs, text=f'CSV files are saved in:\n{DATA_DIR}\n\nRecords include timestamp, interface, SSID, signal percentage and gateway latency.', wraplength=650, style='Muted.TLabel').pack(anchor='w', pady=16)
+        self.btn_log = ttk.Button(logs, text='Start logging', command=self._toggle_logging, style='Accent.TButton'); self.btn_log.pack(anchor='w')
+        self.lbl_latency = ttk.Label(logs, text='Not recording'); self.lbl_latency.pack(anchor='w', pady=16)
+        ttk.Button(logs, text='Open logs folder', command=lambda: os.startfile(str(DATA_DIR))).pack(anchor='w')
+
+    def _start_monitor(self):
+        if self._monitor_engine and self._monitor_engine.is_alive(): return
+        try:
+            interval = int(self.mon_interval_var.get())
+            if not 1 <= interval <= 60: raise ValueError()
+        except ValueError: self._set_status('Enter a monitor interval from 1 to 60 seconds.'); return
+        for values in (self._graph_times, self._graph_dl, self._graph_ul, self._graph_lat): values.clear()
+        self._monitor_identity = None
+        while not self.monitor_queue.empty(): self.monitor_queue.get_nowait()
+        self._monitor_engine = MonitorEngine(interval, self.monitor_queue); self._monitor_engine.start()
+        self.btn_mon_start.config(state='disabled'); self.btn_mon_stop.config(state='normal'); self.interval_entry.config(state='disabled'); self.mon_status_lbl.config(text='Running')
+
     def _stop_monitor(self):
         if self._monitor_engine:
-            self._monitor_engine.stop()
-            self._monitor_engine = None
-        self.btn_mon_start.config(state="normal")
-        self.btn_mon_stop.config(state="disabled")
-        self.mon_status_lbl.config(text="● Stopped", foreground="#FF5722")
- 
-    # ---- Payload application (main thread only) ----
- 
+            self._monitor_engine.stop(); self.btn_mon_stop.config(state='disabled'); self.mon_status_lbl.config(text='Stopping…'); self.after(100, self._monitor_stopped)
+
+    def _monitor_stopped(self):
+        if self._monitor_engine and self._monitor_engine.is_alive(): self.after(100, self._monitor_stopped); return
+        self._monitor_engine = None; self.btn_mon_start.config(state='normal'); self.interval_entry.config(state='normal'); self.mon_status_lbl.config(text='Stopped')
+
     def _apply_monitor_payload(self, payload):
-        """
-        Update tiles and graph. Called exclusively on the Tkinter main
-        thread via _monitor_queues → self.after(). Never called from a
-        background thread, so no matplotlib thread-safety issues.
-        """
-        # ── Tiles ──────────────────────────────────────────────────────
-        lat = payload.get('latency')
-        lat_str   = f"{lat} ms" if lat is not None else "Timeout"
-        lat_color = ("#4caf50" if lat is not None and lat < 80
-                     else "#FF9800" if lat is not None and lat < 200
-                     else "#FF5722")
-        self._mon_lbl_lat.config(text=lat_str, fg=lat_color)
- 
-        jitter    = payload.get('jitter', 0.0)
-        jit_color = ("#4caf50" if jitter < 10
-                     else "#FF9800" if jitter < 30 else "#FF5722")
-        self._mon_lbl_jit.config(text=f"{jitter:.1f} ms", fg=jit_color)
- 
-        loss      = payload.get('loss_pct', 0.0)
-        loss_color = ("#4caf50" if loss == 0
-                      else "#FF9800" if loss < 10 else "#FF5722")
-        self._mon_lbl_loss.config(text=f"{loss:.1f} %", fg=loss_color)
- 
-        dl = payload.get('dl_mbps', 0.0)
-        ul = payload.get('ul_mbps', 0.0)
-        self._mon_lbl_dl.config(text=f"{dl:.3f} Mbps")
-        self._mon_lbl_ul.config(text=f"{ul:.3f} Mbps")
-        self._mon_lbl_gw.config(text=payload.get('gateway', '—'))
-        self._mon_lbl_iface.config(text=payload.get('alias', '—'))
- 
-        # ── Graph ──────────────────────────────────────────────────────
-        if self._mon_fig is None or self._mon_canvas is None:
-            return
- 
-        now = payload.get('timestamp', time.time())
-        self._graph_times.append(now)
-        self._graph_dl.append(dl)
-        self._graph_ul.append(ul)
-        # keep latency series aligned (carry last known value on timeout)
-        self._graph_lat.append(
-            lat if lat is not None
-            else (self._graph_lat[-1] if self._graph_lat else 0)
-        )
- 
-        # trim to window
-        if len(self._graph_times) > MONITOR_HISTORY_LEN:
-            self._graph_times = self._graph_times[-MONITOR_HISTORY_LEN:]
-            self._graph_dl    = self._graph_dl[-MONITOR_HISTORY_LEN:]
-            self._graph_ul    = self._graph_ul[-MONITOR_HISTORY_LEN:]
-            self._graph_lat   = self._graph_lat[-MONITOR_HISTORY_LEN:]
- 
-        if not self._graph_times:
-            return
- 
-        t0 = self._graph_times[0]
-        xs = [t - t0 for t in self._graph_times]
- 
-        ax_tp, ax_lat = self._mon_axes[0], self._mon_axes[1]
- 
-        # Throughput — Y axis is fixed 0–100 Mbps, never autoscaled
-        self._mon_line_dl.set_data(xs, self._graph_dl)
-        self._mon_line_ul.set_data(xs, self._graph_ul)
-        ax_tp.set_xlim(0, max(xs[-1], 10))
- 
-        # Latency — autoscales, minimum 5 ms ceiling
-        self._mon_line_lat.set_data(xs, self._graph_lat)
-        ax_lat.relim(); ax_lat.autoscale_view()
-        if ax_lat.get_ylim()[1] < 5: ax_lat.set_ylim(0, 5)
-        ax_lat.set_xlim(0, max(xs[-1], 10))
- 
-        try:
+        lat, jitter, loss = payload.get('latency'), payload.get('jitter'), payload.get('loss_pct')
+        dl, ul = payload.get('dl_mbps'), payload.get('ul_mbps')
+        self._mon_lbl_lat.config(text=f'{lat} ms' if lat is not None else 'No reply', fg=TEXT if lat is not None else WARN)
+        self._mon_lbl_jit.config(text=f'{jitter:.1f} ms' if jitter is not None else '—')
+        self._mon_lbl_loss.config(text=f'{loss:.1f}%' if loss is not None else '—', fg=WARN if loss else TEXT)
+        rate = lambda x: 'Unavailable' if x is None else f'{x:.2f} Mbps'
+        self.mon_context.set(f"{payload.get('alias', '—')} · Gateway {payload.get('gateway', '—')} · ↓ {rate(dl)}  ↑ {rate(ul)} · {time.strftime('%H:%M:%S')}")
+        identity = (payload.get('alias'), payload.get('gateway'))
+        if getattr(self, '_monitor_identity', None) != identity:
+            for values in (self._graph_times, self._graph_dl, self._graph_ul, self._graph_lat): values.clear()
+            self._monitor_identity = identity
+        for values, value in ((self._graph_times, payload.get('timestamp', time.time())), (self._graph_dl, dl), (self._graph_ul, ul), (self._graph_lat, lat)):
+            values.append(value if value is not None else float('nan'))
+            del values[:-MONITOR_HISTORY_LEN]
+        if self._mon_canvas:
+            times = [t - self._graph_times[0] for t in self._graph_times]
+            for line, values in ((self._mon_line_dl, self._graph_dl), (self._mon_line_ul, self._graph_ul), (self._mon_line_lat, self._graph_lat)): line.set_data(times, values)
+            for ax in self._mon_axes:
+                ax.relim(); ax.autoscale_view(); ax.set_xlim(0, max(10, times[-1])); ax.set_ylim(0, max(5, ax.get_ylim()[1]))
             self._mon_canvas.draw_idle()
-        except Exception:
-            pass
- 
-    # ---- Network tab helpers (unchanged boundary) ----
- 
-    def _set_busy(self, busy: bool):
-        for b in (getattr(self, 'btn_scan', None), getattr(self, 'btn_connect', None), getattr(self, 'btn_disconnect', None), getattr(self, 'btn_auto', None)):
-            if b: b.configure(state=("disabled" if busy else "normal"))
-        self.config(cursor="watch" if busy else "")
-        self.update_idletasks()
- 
-    def _set_status(self, text: str):
-        self.statusbar.config(text=text)
- 
-    def _refresh_status_panel(self):
-        # NOTE: This method is now effectively replaced by _monitor_queues, 
-        # but kept empty or minimal if called elsewhere.
-        pass
- 
-    def _scan_async(self):
-        def worker():
-            try:
-                wired_nets = get_wired_interfaces()
-                try: wifi_nets = aggressive_scan_native(timeout_sec=5.0)
-                except Exception: wifi_nets = scan_burst(max_tries=4, pause_sec=2.0)
-                all_nets = wired_nets + wifi_nets
-                self.after(0, lambda: self._populate_cards(all_nets))
-                self.after(0, lambda: self._set_status(f"Scan complete. {len(all_nets)} network(s) found."))
-            except Exception as e:
-                # Capture the message now: 'e' is unbound the instant this except
-                # block ends, but the lambda below only runs later via .after().
-                err_msg = str(e)
-                self.after(0, lambda msg=err_msg: messagebox.showerror("Scan Error", msg))
-                self.after(0, lambda: self._set_status("Scan failed."))
-            finally:
-                self.after(0, lambda: self._set_busy(False))
-                # Status panel update is now handled by background thread automatically
-        self._set_busy(True); self._set_status("Scanning…")
-        threading.Thread(target=worker, daemon=True).start()
- 
-    def _connect_async(self):
-        if not self.selected_net: messagebox.showinfo("Select", "Please select a network."); return
-        ssid = self.selected_net['ssid']
-        net_type = self.selected_net.get('type', 'wifi')
-        
-        if net_type == 'wired':
-            if not is_admin(): messagebox.showerror("Admin Required", "Admin privileges required."); return
-            def wired_worker():
-                ok = set_interface_state(ssid, enable=True)
-                self.after(0, lambda: self._set_status(f"Enabled '{ssid}'." if ok else "Failed."))
-                self.after(1000, self._scan_async)
-            self._set_busy(True); self._set_status(f"Enabling {ssid}...")
-            threading.Thread(target=wired_worker, daemon=True).start()
-            return
-            
-        auth = self.selected_net.get('auth', '')
-        if is_open_auth(str(auth)):
-            if not messagebox.askyesno("Insecure", "Connect to OPEN network?"): return
-            pw = None
-        else:
-            pw = simpledialog.askstring("Connect", f"Password for '{ssid}':", show="*")
-            if pw is None: return 
-            if pw == "": pw = None
- 
-        def worker():
-            ok = False
-            try:
-                ok = connect(ssid, pw)
-            except Exception as e:
-                err_msg = str(e)
-                self.after(0, lambda msg=err_msg: messagebox.showerror("Error", msg))
-            finally:
-                self.after(0, lambda: self._set_status("Connected." if ok else "Failed."))
-                self.after(0, lambda: self._set_busy(False))
-                self.after(1000, self._scan_async)
-        self._set_busy(True); self._set_status(f"Connecting to '{ssid}'…")
-        threading.Thread(target=worker, daemon=True).start()
- 
-    def _disconnect_async(self):
-        if self.selected_net and self.selected_net.get('type') == 'wired':
-            if not is_admin(): messagebox.showerror("Admin Required", "Admin privileges required."); return
-            ssid = self.selected_net['ssid']
-            def wired_worker():
-                ok = set_interface_state(ssid, enable=False)
-                self.after(0, lambda: self._set_status(f"Disabled '{ssid}'." if ok else "Failed."))
-                self.after(1000, self._scan_async)
-            self._set_busy(True); self._set_status(f"Disabling {ssid}...")
-            threading.Thread(target=wired_worker, daemon=True).start()
-        else:
-            def worker():
-                ok = disconnect()
-                self.after(0, lambda: self._set_status("Disconnected." if ok else "Failed."))
-                self.after(0, lambda: self._set_busy(False))
-                self.after(1000, self._scan_async)
-            self._set_busy(True); self._set_status("Disconnecting…")
-            threading.Thread(target=worker, daemon=True).start()
- 
-    def _auto_reconnect_async(self):
-        def worker():
-            ssid = auto_reconnect_strongest_known()
-            if ssid: self.after(0, lambda: self._set_status(f"Connected to: {ssid}"))
-            else: self.after(0, lambda: self._set_status("No known networks found."))
-            self.after(0, lambda: self._set_busy(False))
-            self.after(1200, self._scan_async)
-        self._set_busy(True); self._set_status("Auto-reconnecting…")
-        threading.Thread(target=worker, daemon=True).start()
- 
-    def _open_adapter_settings(self):
-        # Determine the correct physical interface name (Alias)
-        target_adapter = "Wi-Fi" # Default fallback
-        
-        if self.selected_net:
-            net_type = self.selected_net.get('type', 'wifi')
-            if net_type == 'wired':
-                # For wired, the 'ssid' field holds the interface name (e.g., "Ethernet")
-                target_adapter = self.selected_net.get('ssid')
-            else:
-                # For WiFi, we need the interface name (e.g., "Wi-Fi"), NOT the SSID
-                # We use the helper function wifi_interface_alias() defined earlier
-                wa = wifi_interface_alias()
-                if wa:
-                    target_adapter = wa
-        
-        # If no network selected, try to detect the active one
-        elif get_active_interface_alias():
-            target_adapter = get_active_interface_alias()
- 
-        AdapterSettingsDialog(self, target_adapter=target_adapter)
- 
+
     def _open_ping_window(self):
-        PingWindow(self)
- 
-    def _toggle_auto_scan(self):
-        if self.auto_scan.get():
-            self._set_status("Auto-Scan enabled.")
-            self.after(self.scan_interval_ms, self._auto_scan_tick)
-        else: self._set_status("Auto-Scan disabled.")
- 
-    def _auto_scan_tick(self):
-        if not self.auto_scan.get(): return
-        self._scan_async()
-        self.after(self.scan_interval_ms, self._auto_scan_tick)
+        self._show_page('Diagnostics'); self.diag_notebook.select(self.ping_pane)
+
+    def _toggle_logging(self):
+        if self.logging_active:
+            self.logging_active = False; self.btn_log.config(text='Stopping…', state='disabled'); return
+        self.logging_active = True; self.btn_log.config(text='Stop logging')
+        filename = DATA_DIR / f'network_log_{datetime.now():%Y%m%d_%H%M%S}.csv'
+        def work():
+            try:
+                with filename.open('w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f); writer.writerow(['Timestamp', 'Interface', 'SSID', 'Signal (%)', 'Latency (ms)'])
+                    while self.logging_active and not self._shutting_down.is_set():
+                        alias = get_active_interface_alias(); info = get_adapter_info(alias)
+                        wlan = current_status() if alias == wifi_interface_alias() else {}
+                        signal = re.search(r'\d+', wlan.get('Signal', ''))
+                        latency = measure_latency(info['Gateway']) if info.get('Gateway') else None
+                        writer.writerow([datetime.now().isoformat(), alias, wlan.get('SSID', ''), signal.group() if signal else '', latency if latency is not None else 'Unavailable']); f.flush()
+                        self._post(self.lbl_latency.config, text=f'Last gateway latency: {latency if latency is not None else "Unavailable"} · {filename.name}')
+                        self._shutting_down.wait(2)
+            finally:
+                self.logging_active = False; self._post(self.btn_log.config, text='Start logging', state='normal')
+        self._job(work)
 
     def _on_app_close(self):
-        """
-        Runs when the user clicks the window's X button (WM_DELETE_WINDOW).
+        if self._shutting_down.is_set(): return
+        self._shutting_down.set(); self.auto_scan.set(False); self.logging_active = False
+        self.ping_pane._stop_evt.set()
+        for engine in (self._monitor_engine, self.device_engine, self.http_thread, self._scan_session):
+            if engine:
+                try: engine.stop()
+                except Exception: pass
+        self._set_status('Closing background tools…')
+        self.after(300, self.destroy)
 
-        Without this handler, Tkinter's default close behavior just
-        destroys the window and lets mainloop() return — it never touches
-        any background thread or subprocess. Several of those loops
-        (_background_status_updater, the logging loop, the monitor engine)
-        had NO exit condition at all (`while True:`), or an exit condition
-        but a flat, non-interruptible time.sleep() — so even after
-        destroy() they kept issuing fresh subprocess.run() calls
-        (netsh/PowerShell/nmap) in the background. Being daemon threads
-        means Python *can* exit without waiting for them, but a call that's
-        already mid-flight when destroy() happens can still delay real
-        process exit, and any spawned subprocess (nmap.exe, taskkill,
-        powershell.exe) is a fully independent OS process that keeps
-        running regardless of what Python's threads do.
 
-        Sequence: signal every loop to stop -> explicitly stop each
-        engine/subprocess -> give threads a brief moment to notice ->
-        destroy the window -> hard-exit the interpreter so nothing lingers
-        even if a stray thread is still unwinding.
-        """
-        # Signal every while-loop keyed off this flag to stop on its next
-        # check, and make their sleeps return immediately instead of
-        # waiting out a flat 2s each.
-        self._shutting_down.set()
-        self.auto_scan.set(False)
-        self.logging_active = False
-
-        # Nmap: single scan or comparison-mode scan, whichever is active.
-        if self._comp_thread and self._comp_thread.is_alive():
-            self._comp_stop_evt.set()
-        if self._nmap_runner:
-            try: self._nmap_runner.stop()
-            except Exception: pass
-            self._nmap_runner = None
-
-        # Network Monitor (ping + throughput polling loop).
-        if self._monitor_engine:
-            try: self._monitor_engine.stop()
-            except Exception: pass
-            self._monitor_engine = None
-
-        # HTTP file server — shutdown() can block briefly, so run it on a
-        # disposable thread rather than stalling window teardown.
-        if self.http_thread:
-            t = self.http_thread
-            self.http_thread = None
-            threading.Thread(target=t.stop, daemon=True).start()
-
-        # Give background threads a brief window to notice the stop
-        # signals above and exit their loops cleanly before we tear down
-        # the Tk root they may still be about to touch via .after()/queues.
-        self.after(150, self._finish_app_close)
-
-    def _finish_app_close(self):
-        try:
-            self.destroy()
-        except Exception:
-            pass
-        # Belt-and-suspenders: force the interpreter to exit immediately
-        # rather than trusting that every daemon thread and self.after()
-        # chain has actually unwound by now. This is what guarantees
-        # Netversity.exe itself disappears from Task Manager the moment
-        # the window closes, instead of possibly lingering while a
-        # background thread finishes an in-flight subprocess call.
-        os._exit(0)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
+    if sys.platform != 'win32':
+        raise SystemExit('Netversity requires Windows.')
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
     app = WiFiGUI()
-    app.mainloop()
+    app.mainloop()
