@@ -1527,6 +1527,107 @@ class ScanSession(threading.Thread):
             self.callback('done', (state, records, hosts, failures))
 
 
+class TraceroutePane(ttk.Frame):
+    """
+    Continuous traceroute window — runs 'tracert <target>' (Windows) in a background thread.
+    Streams output to a ScrolledText widget.
+    """
+    def __init__(self, parent):
+        super().__init__(parent, padding=14)
+        self._stop_evt, self._out_q = threading.Event(), queue.Queue()
+        self._thread = None
+        self._target_var = tk.StringVar(value='')
+        self._stats_var = tk.StringVar(value='No traceroute session started')
+
+        row = ttk.Frame(self); row.pack(fill='x', pady=(0, 12))
+        ttk.Label(row, text='Target').pack(side='left')
+        self.target_entry = ttk.Entry(row, textvariable=self._target_var, width=30)
+        self.target_entry.pack(side='left', padx=10)
+        self.target_entry.bind('<Return>', lambda e: self._start_tracert())
+        self._btn_start = ttk.Button(row, text='Start traceroute', command=self._start_tracert, style='Accent.TButton')
+        self._btn_start.pack(side='left')
+        self._btn_stop = ttk.Button(row, text='Stop', command=self._stop_tracert, state='disabled')
+        self._btn_stop.pack(side='left', padx=8)
+        ttk.Button(row, text='Clear', command=self._clear_output).pack(side='left')
+
+        self._txt = scrolledtext.ScrolledText(self, bg=PANEL, fg=TEXT, insertbackground=TEXT,
+                                           font=('Consolas', 10), wrap='word', state='disabled', relief='flat')
+        self._txt.pack(fill='both', expand=True)
+        for tag, color in (('ok', GOOD), ('timeout', WARN), ('info', MUTED), ('header', ACCENT)):
+            self._txt.tag_config(tag, foreground=color)
+        ttk.Label(self, textvariable=self._stats_var).pack(fill='x', pady=(12, 0))
+        self.after(100, self._poll_output)
+
+    def _start_tracert(self):
+        target = self._target_var.get().strip()
+        if not target or target.startswith('-') or any(c.isspace() for c in target):
+            self._stats_var.set('Enter one IP address or hostname.'); return
+        if self._thread and self._thread.is_alive(): return
+        self._stop_evt.clear()
+        self._btn_start.config(state='disabled'); self._btn_stop.config(state='normal')
+        self.target_entry.config(state='disabled')
+        self._stats_var.set('Traceroute running...')
+        self._clear_output()
+        self._thread = threading.Thread(target=self._tracert_loop, args=(target,), daemon=True)
+        self._thread.start()
+
+    def _stop_tracert(self):
+        self._stop_evt.set(); self._btn_stop.config(state='disabled')
+        self._stats_var.set('Stopping traceroute…')
+
+    def _tracert_loop(self, target: str):
+        cmd = ['tracert', '-d', str(target)]
+        self._out_q.put(('line', f"Tracing route to {target} over a maximum of 30 hops:\n", 'header'))
+        try:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, errors='replace', startupinfo=si)
+            while True:
+                if self._stop_evt.is_set():
+                    proc.terminate()
+                    break
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                self._out_q.put(('line', line, 'ok' if 'ms' in line else 'info'))
+            proc.wait()
+        except Exception as exc:
+            self._out_q.put(('line', f"Error: {exc}\n", 'timeout'))
+        finally:
+            self._out_q.put(('done', None, None))
+
+    def _poll_output(self):
+        for _ in range(200):
+            try: kind, text, tag = self._out_q.get_nowait()
+            except queue.Empty: break
+            if kind == 'line': self._append(text, tag)
+            elif kind == 'done':
+                self._btn_start.config(state='normal'); self._btn_stop.config(state='disabled')
+                self.target_entry.config(state='normal')
+                if self._stop_evt.is_set():
+                    self._stats_var.set('Traceroute stopped.')
+                else:
+                    self._stats_var.set('Traceroute completed.')
+        if int(self._txt.index('end-1c').split('.')[0]) > 3000:
+            self._txt.config(state='normal'); self._txt.delete('1.0', '1000.0'); self._txt.config(state='disabled')
+        self.after(100, self._poll_output)
+
+    def _append(self, text: str, tag: str = ""):
+        self._txt.config(state="normal")
+        if tag:
+            self._txt.insert(tk.END, text, tag)
+        else:
+            self._txt.insert(tk.END, text)
+        self._txt.see(tk.END)
+        self._txt.config(state="disabled")
+
+    def _clear_output(self):
+        self._txt.config(state="normal")
+        self._txt.delete("1.0", tk.END)
+        self._txt.config(state="disabled")
+
+
 class PingPane(ttk.Frame):
     # Reuse the original Windows ping parser and worker without a second window.
     _do_ping = PingWindow._do_ping
@@ -1717,6 +1818,18 @@ class WiFiGUI(tk.Tk):
 
     def _set_status(self, text):
         self.statusbar.config(text=text)
+
+    def _send_magic_packet(self, mac_address: str):
+        """Sends a Wake-on-LAN magic packet to the given MAC address."""
+        if not mac_address or mac_address.lower() == 'unknown':
+            raise ValueError("Invalid MAC address")
+        mac_bytes = bytes.fromhex(mac_address.replace(':', '').replace('-', ''))
+        if len(mac_bytes) != 6:
+            raise ValueError("Invalid MAC address length")
+        magic_packet = b'\xff' * 6 + mac_bytes * 16
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.sendto(magic_packet, ('255.255.255.255', 9))
 
     def _open_nmap_help(self):
         HelpWindow(self, title='Nmap flags reference', text=NMAP_FLAGS_HELP)
@@ -2074,7 +2187,14 @@ class WiFiGUI(tk.Tk):
         ttk.Button(row, text='Stop', command=self._stop_devices).pack(side='left')
         ttk.Button(row, text='Save baseline', command=self._save_device_baseline).pack(side='left', padx=8)
         ttk.Button(row, text='Alert log', command=self._device_alert_log).pack(side='left')
+
+        self.continuous_monitoring = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row, text='Continuous Monitoring', variable=self.continuous_monitoring, command=self._toggle_continuous).pack(side='left', padx=16)
+
         self.device_state = ttk.Label(parent, text='Choose a local subnet, then start discovery. Maximum 4,096 addresses.', style='Muted.TLabel'); self.device_state.pack(fill='x', pady=(0, 12))
+
+        # Add warning banner for ARP Spoofing / Address changes
+        self.device_alert_banner = tk.Label(parent, text='', bg=BAD, fg='#000000', font=('Segoe UI', 10, 'bold'), padx=10, pady=5)
         notebook = ttk.Notebook(parent); notebook.pack(fill='both', expand=True)
         table, graph = ttk.Frame(notebook, padding=8), ttk.Frame(notebook, padding=8)
         notebook.add(table, text='Device list'); notebook.add(graph, text='Network map')
@@ -2083,6 +2203,7 @@ class WiFiGUI(tk.Tk):
         ttk.Button(actions, text='Ping selected', command=self._ping_device).pack(side='left')
         ttk.Button(actions, text='Scan selected', command=self._scan_device).pack(side='left', padx=8)
         ttk.Button(actions, text='Copy selected', command=self._copy_device).pack(side='left')
+        ttk.Button(actions, text='Wake selected', command=self._wake_device).pack(side='left', padx=8)
         ttk.Label(graph, text='Inferred gateway relationships · Not a physical wiring map', style='Muted.TLabel').pack(anchor='w', pady=(0, 8))
         self.device_fig = self.device_canvas = None
         if mpl_figure and FigureCanvasTkAgg and nx:
@@ -2105,9 +2226,13 @@ class WiFiGUI(tk.Tk):
         self._alerted_ips.clear()
         while not self.device_queue.empty(): self.device_queue.get_nowait()
         gateway = self.adapter_snapshot.get('Gateway')
-        self.device_engine = TopoEngine(str(network), gateway, self.baseline, interval=30, out_q=self.device_queue)
+        interval = 300 if getattr(self, 'continuous_monitoring', None) and self.continuous_monitoring.get() else 30
+        self.device_engine = TopoEngine(str(network), gateway, self.baseline, interval=interval, out_q=self.device_queue)
         self.device_engine.start(); self.device_start.config(text='Refresh now'); self.device_target.config(state='disabled')
-        self.device_state.config(text=f'Discovering {network}… Updates every 30 seconds after each sweep.')
+        if interval == 300:
+            self.device_state.config(text=f'Monitoring {network} continuously… Updates every 5 minutes.')
+        else:
+            self.device_state.config(text=f'Discovering {network}… Updates every 30 seconds after each sweep.')
 
     def _stop_devices(self):
         if self.device_engine:
@@ -2118,14 +2243,36 @@ class WiFiGUI(tk.Tk):
         self.device_engine = None; self.device_start.config(text='Start discovery'); self.device_target.config(state='normal')
         self.device_state.config(text='Discovery stopped. Last results retained.')
 
+    def _toggle_continuous(self):
+        if self.continuous_monitoring.get():
+            if self.device_engine:
+                self.device_engine.interval = 300 # 5 minutes interval for continuous scan loop.
+                self.device_state.config(text=self.device_state.cget('text').replace('30 seconds', '5 minutes').replace('Discovering', 'Monitoring').replace('after each sweep.', 'continuously…'))
+            else:
+                self._start_devices()
+        else:
+            if self.device_engine:
+                self.device_engine.interval = 30 # Revert to default behavior
+                self.device_state.config(text=self.device_state.cget('text').replace('5 minutes', '30 seconds').replace('Monitoring', 'Discovering').replace('continuously…', 'after each sweep.'))
+
     def _apply_devices(self, payload):
         self.device_nodes = payload.get('nodes', [])
         selected = self.device_tree.selection()
         self.device_tree.delete(*self.device_tree.get_children())
+        spoof_warnings = []
         for n in self.device_nodes:
             self.device_tree.insert('', 'end', iid=n['ip'], values=(n['ip'], n.get('name') or 'Unnamed', n.get('mac'), n.get('vendor'), n.get('os') or 'Unknown', n.get('status')))
             if n['status'] in ('Newly observed', 'Address changed') and n['ip'] not in self._alerted_ips:
                 with (DATA_DIR / 'security_alerts.log').open('a', encoding='utf-8') as f: f.write(f"{datetime.now().isoformat()} {n['ip']} {n['status']} {n.get('mac')}\n")
+            if n['status'] == 'Address changed':
+                spoof_warnings.append(n['ip'])
+
+        if spoof_warnings:
+            self.device_alert_banner.config(text=f"WARNING: MAC Address changed for IP(s): {', '.join(spoof_warnings)}. Possible ARP Spoofing detected!")
+            self.device_alert_banner.pack(fill='x', pady=(0, 10), before=self.device_state)
+        else:
+            self.device_alert_banner.pack_forget()
+
         self._alerted_ips = {n['ip'] for n in self.device_nodes if n['status'] in ('Newly observed', 'Address changed')}
         if selected and self.device_tree.exists(selected[0]): self.device_tree.selection_set(selected[0])
         self.device_state.config(text=f"{len(self.device_nodes)} observations · {len(self._alerted_ips)} changes to review · Updated {time.strftime('%H:%M:%S')}")
@@ -2175,6 +2322,20 @@ class WiFiGUI(tk.Tk):
     def _copy_device(self):
         ip = self._selected_device()
         if ip: self._copy(' | '.join(map(str, self.device_tree.item(ip, 'values'))))
+
+    def _wake_device(self):
+        ip = self._selected_device()
+        if not ip: return
+        values = self.device_tree.item(ip, 'values')
+        mac = values[2] if len(values) > 2 else None
+        if not mac or mac == 'Unknown':
+            self._set_status('Cannot wake device: Unknown MAC address.')
+            return
+        try:
+            self._send_magic_packet(mac)
+            self._set_status(f'Wake-on-LAN magic packet sent to {mac}.')
+        except Exception as exc:
+            self._set_status(f'Failed to send Wake-on-LAN packet: {exc}')
 
     def _build_http_ui(self, parent):
         self._heading(parent, 'File sharing', 'Share a selected folder over HTTP')
@@ -2238,8 +2399,9 @@ class WiFiGUI(tk.Tk):
         self.diag_notebook = ttk.Notebook(parent); self.diag_notebook.pack(fill='both', expand=True)
         monitor = ttk.Frame(self.diag_notebook, padding=12)
         self.ping_pane = PingPane(self.diag_notebook)
+        self.traceroute_pane = TraceroutePane(self.diag_notebook)
         logs = ttk.Frame(self.diag_notebook, padding=18)
-        self.diag_notebook.add(monitor, text='Live monitor'); self.diag_notebook.add(self.ping_pane, text='Ping'); self.diag_notebook.add(logs, text='Logging')
+        self.diag_notebook.add(monitor, text='Live monitor'); self.diag_notebook.add(self.ping_pane, text='Ping'); self.diag_notebook.add(self.traceroute_pane, text='Traceroute'); self.diag_notebook.add(logs, text='Logging')
         ctrl = ttk.Frame(monitor); ctrl.pack(fill='x', pady=(0, 14))
         self.btn_mon_start = ttk.Button(ctrl, text='Start monitor', command=self._start_monitor, style='Accent.TButton'); self.btn_mon_start.pack(side='left')
         self.btn_mon_stop = ttk.Button(ctrl, text='Stop', command=self._stop_monitor, state='disabled'); self.btn_mon_stop.pack(side='left', padx=8)
